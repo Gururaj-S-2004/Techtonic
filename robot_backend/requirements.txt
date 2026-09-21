@@ -1,0 +1,7 @@
+pyserial>=3.5
+python-dotenv>=1.0.1
+numpy>=1.26,<2.0
+requests>=2.31
+faster-whisper>=1.0.3
+piper-tts>=1.2.0
+sounddevice>=0.4.6

@@ -1,0 +1,126 @@
+{
+  "event_name": "TECHTONIC 2026",
+  "event_info": {
+    "name": "TECHTONIC 2026",
+    "type": "INTER-COLLEGIATE TECHNICAL FEST",
+    "date": "25th September 2026",
+    "organizer": {
+      "institution": "Madras Christian College (Autonomous)",
+      "department": "Department of Computer Science (Shift-II)"
+    },
+    "website": "https://techtonic-2026.vercel.app/",
+    "email": "bsc.cs@mcc.edu.in"
+  },
+  "rules": [
+    {
+      "id": "event-overview",
+      "keywords": [
+        "techtonic", "tectonic", "2026", "fest", "symposium", "technical fest",
+        "mcc", "madras christian college", "department", "computer science",
+        "organizer", "host", "college"
+      ],
+      "question_hint": "What is Techtonic 2026?",
+      "answer": "Techtonic 2026 is a CS tech fest at MCC on 25 Sep 2026."
+    },
+    {
+      "id": "registration-schedule",
+      "keywords": [
+        "registration", "register", "reporting", "reporting time",
+        "arrival", "morning", "timing", "schedule", "start time", "reach"
+      ],
+      "question_hint": "What time is registration and reporting?",
+      "answer": "Report by 8:30 AM on 25 Sep. Starts at 9:30 AM."
+    },
+    {
+      "id": "inauguration-venue",
+      "keywords": [
+        "inauguration", "ceremony", "anderson hall", "hall",
+        "venue", "auditorium", "opening", "location", "place"
+      ],
+      "question_hint": "Where and when is the inauguration ceremony?",
+      "answer": "Inauguration at 9:30 AM in Anderson Hall at MCC."
+    },
+    {
+      "id": "documents-and-attire",
+      "keywords": [
+        "documents", "id card", "identity card", "bonafide", "certificate",
+        "dress code", "attire", "general guidelines", "requirements", "eligibility",
+        "decorum", "rules of conduct"
+      ],
+      "question_hint": "What documents and dress code are required?",
+      "answer": "Bring your college ID & Bonafide. Formal attire."
+    },
+    {
+      "id": "events-list",
+      "keywords": [
+        "events", "competitions", "contests", "activities",
+        "list of events", "what competitions", "participate"
+      ],
+      "question_hint": "What competitions are being conducted?",
+      "answer": "Events: PPT, WebCraft, Debug, ADZAP, Quiz, Collage."
+    },
+    {
+      "id": "event-catalyst-paper-presentation",
+      "keywords": [
+        "paper presentation", "catalyst", "research", "abstract",
+        "ieee", "ppt", "powerpoint", "thematic areas", "slides", "paper presentation rules"
+      ],
+      "question_hint": "Tell me about Catalyst Paper Presentation.",
+      "answer": "Catalyst: PPT for 2 members. 8 min talk, 2 min Q&A."
+    },
+    {
+      "id": "event-web-craft",
+      "keywords": [
+        "web designing", "web craft", "website", "html",
+        "css", "web design rules", "web page"
+      ],
+      "question_hint": "What are the rules for Web Craft Web Designing?",
+      "answer": "Web Craft: 2 members. HTML & CSS only. No web access."
+    },
+    {
+      "id": "event-breakpoint-debugging",
+      "keywords": [
+        "debugging", "breakpoint", "code", "coding", "errors",
+        "python", "c language", "debug", "programming", "debugging rules"
+      ],
+      "question_hint": "What are the rules for Breakpoint Debugging?",
+      "answer": "Breakpoint: C & Python debug for 2, 50 mins. No phones."
+    },
+    {
+      "id": "event-brand-storm-adzap",
+      "keywords": [
+        "adzap", "brand storm", "ad zap", "advertisement", "commercial",
+        "marketing", "acting", "props"
+      ],
+      "question_hint": "Tell me about Brand Storm ADZAP.",
+      "answer": "Brand Storm: ADZAP for 5. Topic on spot, 5 mins."
+    },
+    {
+      "id": "event-synapse-quiz",
+      "keywords": [
+        "quiz", "synapse", "trivia", "buzzer",
+        "rapid fire", "written round", "quiz master", "questions"
+      ],
+      "question_hint": "What are the rounds in the Synapse Quiz?",
+      "answer": "Synapse: Quiz for 2. Written, Buzzer & Rapid."
+    },
+    {
+      "id": "event-pixelora-digital-collage",
+      "keywords": [
+        "digital collage", "pixelora", "collage", "poster",
+        "gmeet", "google meet", "jpeg", "png", "submission"
+      ],
+      "question_hint": "How do I submit for Pixelora Digital Collage?",
+      "answer": "Pixelora: Collage for 2. Email entry by 23 Sep."
+    },
+    {
+      "id": "contact-and-website",
+      "keywords": [
+        "contact", "website", "email", "link", "url",
+        "phone", "help", "queries", "support", "staff", "reach"
+      ],
+      "question_hint": "How can I contact the organizers or view the website?",
+      "answer": "Site: techtonic- 2026.vercel. app. Mail CS dept."
+    }
+  ]
+}

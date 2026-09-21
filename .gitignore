@@ -1,0 +1,10 @@
+robot_backend/.venv/
+robot_backend/.env
+robot_backend/voices/*.onnx
+robot_backend/voices/*.onnx.json
+robot_backend/__pycache__/
+robot_backend/**/__pycache__/
+robot_backend/.pytest_cache/
+build/
+EventRobot/
+*.pyc
