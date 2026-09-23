@@ -1,4 +1,4 @@
-﻿#include <SPI.h>
+#include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <ESP32Servo.h>
@@ -202,62 +202,74 @@ void runInteraction(const char *triggerSource) {
   waveServo();
   sendStatus("GREETING_DONE");
 
-  // --- 2. Wait for COMMAND:LISTEN, then signal laptop to record ---
-  cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  if (cmd != "LISTEN") {
-    sendError("Expected LISTEN, got: " + cmd);
-    returnToIdle();
-    return;
-  }
-  currentState = STATE_LISTENING;
-  showStatus("Listening...", "Speak your\nquestion\nnow");
-  streamMicToBackend();
-
-  // --- 3. Optional COMMAND:PROCESSING status hint, then wait for reply ---
-  currentState = STATE_WAITING_RESPONSE;
-  showStatus("Thinking...", "Please wait");
-
-  // Save the displayed text so we can re-show it on the TFT while the laptop speaks.
+  // ============================================================
+  // SESSION LOOP — runs one Q&A round per iteration.
+  // Python sends COMMAND:LISTEN to start each round.
+  // Python sends COMMAND:IDLE when silence is detected (session over).
+  // ============================================================
   String lastAnswer = "";
+  int questionCount = 0;
 
-  cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  if (cmd == "PROCESSING") {
-    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  }
+  while (true) {
+    // At the top of each round, wait for LISTEN (continue) or IDLE (end).
+    // After a SPEAK the laptop plays audio first — use a long timeout so we
+    // don't give up while audio is still playing.
+    unsigned long cmdTimeout = (currentState == STATE_SPEAKING)
+        ? SERIAL_CMD_TIMEOUT_MS * 4   // up to 80s for very long TTS
+        : SERIAL_CMD_TIMEOUT_MS;
 
-  if (cmd.startsWith("DISPLAY_Q:")) {
-    // Question is displayed in the laptop terminal only, not on the TFT
-    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  }
+    cmd = waitForCommand(cmdTimeout);
 
-  if (cmd.startsWith("DISPLAY_A:")) {
-    lastAnswer = cmd.substring(10);
-    showStatus("Answer:", lastAnswer.c_str(), ST7735_CYAN);
-    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  }
+    if (cmd == "IDLE") {
+      // Laptop detected silence — session is over.
+      break;
+    }
 
-  if (cmd == "SPEAK") {
-    // The laptop plays TTS audio on its own speaker.
-    // We just show the answer on the TFT and wait for COMMAND:IDLE.
-    currentState = STATE_SPEAKING;
-    // Use a generous timeout: long answers can take many seconds to speak.
-    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS * 3);
-    if (cmd != "IDLE") {
-      sendError("Expected IDLE after SPEAK, got: " + cmd);
+    if (cmd != "LISTEN") {
+      sendError("Expected LISTEN or IDLE, got: " + cmd);
+      break;
+    }
+
+    // --- LISTEN phase ---
+    questionCount++;
+    currentState = STATE_LISTENING;
+    if (questionCount == 1) {
+      showStatus("Listening...", "Speak your\nquestion\nnow");
     } else {
-      // Keep the answer on screen briefly after speech ends
-      if (lastAnswer.length() > 0) {
-        delay(2000);
-      }
+      showStatus("Listening...", "Ask another\nquestion");
     }
-  } else if (cmd == "IDLE") {
-    // backend gave up / had nothing to say - but still show the answer
-    // if we got one (e.g. TTS failed), so the TFT is never blank.
-    if (lastAnswer.length() > 0) {
-      delay(4000);
+    streamMicToBackend();
+
+    // --- THINK phase ---
+    currentState = STATE_WAITING_RESPONSE;
+    showStatus("Thinking...", "Please wait");
+    lastAnswer = "";
+
+    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+    if (cmd == "PROCESSING") {
+      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
     }
-  } else {
-    sendError("Expected SPEAK or IDLE, got: " + cmd);
+    if (cmd.startsWith("DISPLAY_Q:")) {
+      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+    }
+    if (cmd.startsWith("DISPLAY_A:")) {
+      lastAnswer = cmd.substring(10);
+      showStatus("Answer:", lastAnswer.c_str(), ST7735_CYAN);
+      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+    }
+
+    if (cmd == "SPEAK") {
+      // Laptop plays TTS on its own speaker. Answer stays on TFT.
+      // We just update state and fall back to the top of the loop,
+      // where we wait (with extended timeout) for LISTEN or IDLE.
+      currentState = STATE_SPEAKING;
+    } else if (cmd == "IDLE") {
+      // Session ended mid-round (TTS failed, or no answer).
+      break;
+    } else {
+      sendError("Expected SPEAK or IDLE, got: " + cmd);
+      break;
+    }
   }
 
   returnToIdle();

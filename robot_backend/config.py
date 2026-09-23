@@ -64,7 +64,7 @@ PRE_SPEAK_DELAY_S = _env_float("PRE_SPEAK_DELAY_S", 1.0)
 # device's output stream has time to fully drain before playback stops -
 # without it, the last syllable of the answer can get clipped on some
 # Windows audio backends.
-TTS_TRAILING_SILENCE_S = _env_float("TTS_TRAILING_SILENCE_S", 0.4)
+TTS_TRAILING_SILENCE_S = _env_float("TTS_TRAILING_SILENCE_S", 0.6)
 
 # -- Laptop microphone (replaces INMP441 on the ESP32) ---------------------
 # How many seconds to capture from the laptop mic after COMMAND:LISTEN.

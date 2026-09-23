@@ -22,7 +22,7 @@ from serial_link import SerialLink, SerialLinkError, SerialTimeout
 
 logger = logging.getLogger("robot_backend.main")
 
-FALLBACK_ANSWER = "I'm not sure. Please ask a staff member."
+FALLBACK_ANSWER = "Sorry, my circuits are a bit foggy right now. Try again!"
 
 
 def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
@@ -36,90 +36,102 @@ def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
     return "|".join(lines)
 
 
+
 def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
-    """Runs exactly one full visitor interaction. Any protocol-level error
-    is allowed to propagate to the caller, which logs it and returns the
-    robot to waiting for the next trigger - one bad cycle should never take
-    down the whole kiosk."""
+    """Runs one full visitor session (multiple questions) until silence is detected.
+    After each answered question the session loops back to LISTEN.
+    The session ends only when the visitor is silent for MIC_RECORD_SECONDS seconds."""
     trigger_source = link.wait_for_trigger()
     logger.info("Trigger received: %s", trigger_source)
 
     link.send_command("GREET")
     link.wait_for_status("GREETING_DONE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
 
-    # Send LISTEN, wait for ESP32 to signal it's ready (green LED on the robot),
-    # then record from the laptop's own microphone.
-    link.send_command("LISTEN")
-    link.wait_for_status("LISTEN_READY", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
-    pcm_audio = mic.record()              # captures from the laptop mic
-    link.send_line("STATUS:RECORDING_DONE")  # tell ESP32 we're done
-    logger.info("Recorded %.2fs of question audio from laptop mic",
-                len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
+    question_count = 0
 
-    link.send_command("PROCESSING")
+    # Session loop: keep listening until silence (empty transcript) is detected.
+    while True:
+        link.send_command("LISTEN")
+        link.wait_for_status("LISTEN_READY", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+        pcm_audio = mic.record()                   # records for MIC_RECORD_SECONDS (6s)
+        link.send_line("STATUS:RECORDING_DONE")
+        logger.info("Recorded %.2fs of audio from laptop mic",
+                    len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
 
-    question = stt.transcribe(pcm_audio)
-    if question:
+        question = stt.transcribe(pcm_audio)
+
+        if not question:
+            # No speech detected — visitor is silent, end the session.
+            logger.info("Silence detected — ending session after %d question(s).", question_count)
+            link.send_command("IDLE")
+            link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+            return
+
+        question_count += 1
         logger.info("Visitor asked: %s", question)
         print(f"\n==========================================")
         print(f"  You said: {question}")
         print(f"==========================================\n")
-        # 'You said' is displayed only in the terminal, not on the TFT
 
-    answer = _generate_answer(question, rulebook)
+        link.send_command("PROCESSING")
 
-    if not answer:
-        link.send_command("IDLE")
-        return
+        answer = _generate_answer(question, rulebook)
 
-    logger.info("Answer: %s", answer)
-    print(f"\n==========================================")
-    print(f"  Answer: {answer}")
-    print(f"==========================================\n")
+        if not answer:
+            # Fallback is always set, but guard anyway — end session.
+            link.send_command("IDLE")
+            link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+            return
 
-    clean_a = format_for_display(answer, width=12, max_lines=5)
-    link.send_command(f"DISPLAY_A:{clean_a}")
+        logger.info("Answer: %s", answer)
+        print(f"\n==========================================")
+        print(f"  Answer: {answer}")
+        print(f"==========================================\n")
 
-    pcm_bytes, sample_rate = tts.synthesize(answer)
-    if not pcm_bytes:
-        link.send_command("IDLE")
-        return
+        clean_a = format_for_display(answer, width=12, max_lines=5)
+        link.send_command(f"DISPLAY_A:{clean_a}")
 
-    # Signal ESP32 that we are about to speak (it updates the display and waits).
-    link.send_command("SPEAK")
+        pcm_bytes, sample_rate = tts.synthesize(answer)
+        if not pcm_bytes:
+            # TTS failed — end session gracefully.
+            link.send_command("IDLE")
+            link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+            return
 
-    # Small deliberate pause before the voice starts - reads as the robot
-    # "considering" its answer rather than blurting it out, which is more
-    # engaging for a watching crowd. Set PRE_SPEAK_DELAY_S=0 to disable.
-    if config.PRE_SPEAK_DELAY_S > 0:
-        time.sleep(config.PRE_SPEAK_DELAY_S)
+        link.send_command("SPEAK")
 
-    # Play the TTS audio on the laptop's own speaker, start to finish.
-    _play_audio(pcm_bytes, sample_rate)
+        # Small deliberate pause before the voice starts - reads as the robot
+        # "considering" its answer rather than blurting it out, which is more
+        # engaging for a watching crowd. Set PRE_SPEAK_DELAY_S=0 to disable.
+        if config.PRE_SPEAK_DELAY_S > 0:
+            time.sleep(config.PRE_SPEAK_DELAY_S)
 
-    # Tell the ESP32 we are done speaking so it can return to idle.
-    link.send_command("IDLE")
+        # Play the TTS audio on the laptop's own speaker, start to finish.
+        _play_audio(pcm_bytes, sample_rate)
 
-    # ESP32 always ends runInteraction() with STATUS:IDLE - wait for it so
-    # the serial buffer is clean before we go back to wait_for_trigger().
-    link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+        # After speaking: the while loop sends COMMAND:LISTEN next round —
+        # NO COMMAND:IDLE here, so the ESP32 stays in the session.
 
 
 
 def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
     """Plays raw PCM16LE mono audio on the laptop's default output device,
-    fully and clearly from start to end. A little trailing silence is
-    padded on so the output stream has time to drain before it stops -
-    otherwise the last syllable can get clipped on some Windows audio
-    backends."""
+    fully and clearly from start to end.
+
+    Appends trailing silence before playing so the last word is never cut
+    off by the audio device's hardware output buffer drain. Without this,
+    sounddevice.play(blocking=True) can return while the final ~50-100ms
+    is still queued in the device driver, clipping the end of the sentence.
+    """
     if not pcm_bytes:
         return
     samples = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32) / 32768.0
+    # Silence tail — long enough to outlast any hardware buffer latency.
     pad_len = int(sample_rate * config.TTS_TRAILING_SILENCE_S)
     if pad_len:
         samples = np.concatenate([samples, np.zeros(pad_len, dtype=np.float32)])
-    sd.play(samples, samplerate=sample_rate, blocking=False, latency="high")
-    sd.wait()
+    sd.play(samples, samplerate=sample_rate, blocking=True, latency="high")
+    sd.wait()  # belt-and-suspenders: drain any remaining OS-level buffer
 
 
 def _generate_answer(question: str, rulebook: rulebook_mod.Rulebook) -> str:
