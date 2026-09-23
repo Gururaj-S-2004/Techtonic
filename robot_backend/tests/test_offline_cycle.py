@@ -32,33 +32,46 @@ def _fake_pcm(n_samples: int, value: int = 1000) -> bytes:
     return struct.pack(f"<{n_samples}h", *([value] * n_samples))
 
 
-def _fake_device(device_link: SerialLink, question_pcm: bytes, results: dict) -> None:
-    """Plays the role of EventRobot.ino for one full interaction."""
+def _fake_device(device_link: SerialLink, results: dict) -> None:
+    """Plays the role of EventRobot.ino for a full (possibly multi-question)
+    session. TTS audio is played on the laptop's own speaker now, so nothing
+    audio-related crosses the wire - SPEAK just means "keep looping for the
+    next LISTEN or IDLE", matching runInteraction()'s session loop in
+    EventRobot.ino."""
     device_link.send_line("TRIGGER:BUTTON")
 
     line = device_link.readline(timeout=5)
     assert line == "COMMAND:GREET", line
     device_link.send_line("STATUS:GREETING_DONE")
 
-    line = device_link.readline(timeout=5)
-    assert line == "COMMAND:LISTEN", line
-    device_link.send_line("STATUS:LISTEN_READY")
+    results["spoke_count"] = 0
 
-    line = device_link.readline(timeout=5)
-    assert line == "STATUS:RECORDING_DONE", line
+    while True:
+        line = device_link.readline(timeout=5)
+        if line == "COMMAND:IDLE":
+            device_link.send_line("STATUS:IDLE")
+            return
+        assert line == "COMMAND:LISTEN", line
+        device_link.send_line("STATUS:LISTEN_READY")
 
-    line = device_link.readline(timeout=10)
-    if line == "COMMAND:PROCESSING":
-        line = device_link.readline(timeout=20)
+        line = device_link.readline(timeout=5)
+        assert line == "STATUS:RECORDING_DONE", line
 
-    if line == "COMMAND:SPEAK":
-        results["reply_pcm"] = device_link.read_audio_frame(timeout=10)
-    elif line == "COMMAND:IDLE":
-        results["reply_pcm"] = None
-    else:
-        raise AssertionError(f"unexpected command: {line}")
+        line = device_link.readline(timeout=10)
+        if line == "COMMAND:PROCESSING":
+            line = device_link.readline(timeout=20)
+        if line.startswith("COMMAND:DISPLAY_A:"):
+            results["last_answer"] = line[len("COMMAND:DISPLAY_A:"):]
+            line = device_link.readline(timeout=5)
 
-    device_link.send_line("STATUS:IDLE")
+        if line == "COMMAND:SPEAK":
+            results["spoke_count"] += 1
+            # No audio frame to read anymore - loop back for the next round.
+        elif line == "COMMAND:IDLE":
+            device_link.send_line("STATUS:IDLE")
+            return
+        else:
+            raise AssertionError(f"unexpected command: {line}")
 
 
 def test_full_interaction_cycle(monkeypatch):
