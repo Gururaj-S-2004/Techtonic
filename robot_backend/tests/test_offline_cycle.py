@@ -3,7 +3,7 @@ run against a fake in-memory serial pair (tests/fake_stream.py) instead of
 real hardware. STT/TTS/LLM are monkeypatched so this test is fast, fully
 offline, and doesn't need any ML model downloaded - it exists purely to
 prove main.py and serial_link.py agree on the wire protocol with each
-other (and, by inspection, with EventRobot.ino's matching comments).
+other (and, by inspection, with KibiKibi.ino's matching comments).
 
 Run with: pytest tests/test_offline_cycle.py -v
 """
@@ -33,11 +33,11 @@ def _fake_pcm(n_samples: int, value: int = 1000) -> bytes:
 
 
 def _fake_device(device_link: SerialLink, results: dict) -> None:
-    """Plays the role of EventRobot.ino for a full (possibly multi-question)
+    """Plays the role of KibiKibi.ino for a full (possibly multi-question)
     session. TTS audio is played on the laptop's own speaker now, so nothing
     audio-related crosses the wire - SPEAK just means "keep looping for the
     next LISTEN or IDLE", matching runInteraction()'s session loop in
-    EventRobot.ino."""
+    KibiKibi.ino."""
     device_link.send_line("TRIGGER:BUTTON")
 
     line = device_link.readline(timeout=5)

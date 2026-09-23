@@ -2,7 +2,7 @@
 
 Records from the host machine's default (or configured) audio input device,
 returning raw PCM16LE mono bytes at config.AUDIO_SAMPLE_RATE - the same format
-that EventRobot.ino previously streamed over serial from the INMP441.
+that KibiKibi.ino previously streamed over serial from the INMP441.
 
 Usage::
 

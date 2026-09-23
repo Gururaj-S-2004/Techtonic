@@ -6,6 +6,6 @@ robot_backend/__pycache__/
 robot_backend/**/__pycache__/
 robot_backend/.pytest_cache/
 build/
-EventRobot/
+KibiKibi/
 *.pyc
 .venv/

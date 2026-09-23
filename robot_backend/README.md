@@ -1,4 +1,4 @@
-# EventRobot backend
+# Kibi-Kibi backend
 
 Runs on the laptop, talks to the ESP32-S3 kiosk over USB serial (921600
 baud). Orchestrates: wait for TRIGGER -> COMMAND:GREET -> COMMAND:LISTEN
@@ -7,7 +7,7 @@ rulebook search -> Groq LLM -> offline TTS) -> COMMAND:SPEAK (send answer
 audio) -> COMMAND:IDLE.
 
 The exact line/byte framing is documented in two places that must always
-agree: the `WIRE PROTOCOL` comment block at the top of `../EventRobot.ino`,
+agree: the `WIRE PROTOCOL` comment block at the top of `../KibiKibi.ino`,
 and the module docstring in `serial_link.py`.
 
 Everything is offline/free except the LLM call (`llm.py`, via Groq's API) -
@@ -89,7 +89,7 @@ pytest tests/ -v
 processing -> speak -> idle cycle against an in-memory fake serial pair
 (`tests/fake_stream.py`), with STT/TTS/LLM monkeypatched out. It exists to
 catch wire-protocol desyncs between `main.py`/`serial_link.py` and
-`EventRobot.ino` without needing a board plugged in.
+`KibiKibi.ino` without needing a board plugged in.
 
 ## Fragile points / things to double-check before a live demo
 
@@ -98,7 +98,7 @@ catch wire-protocol desyncs between `main.py`/`serial_link.py` and
   port on an actual `OSError` (cable unplugged), not on ordinary protocol
   errors - don't "fix" a stuck interaction by restarting `main.py`
   repeatedly if the board is otherwise fine, since each restart reboots it.
-- **Fixed 5-second listening window**: `EventRobot.ino`'s `RECORD_SECONDS`
+- **Fixed 5-second listening window**: `KibiKibi.ino`'s `RECORD_SECONDS`
   is a fixed capture window, not silence-detected. A visitor who talks
   past 5 seconds gets truncated. If that's a problem live, raise
   `RECORD_SECONDS` in the .ino (and reflash) rather than trying to fix it
@@ -108,7 +108,7 @@ catch wire-protocol desyncs between `main.py`/`serial_link.py` and
   interaction (the visitor sees a "no response" style failure and gets
   cycled back to idle). Fine for a kiosk with light foot traffic; not
   designed for a lossy/long serial cable.
-- **Mic gain shift (`>>14`) in EventRobot.ino**: tuned by feel, not
+- **Mic gain shift (`>>14`) in KibiKibi.ino**: tuned by feel, not
   measured. If STT accuracy is poor, check `stt.py`'s log line for the
   transcript first - if it's consistently garbled/clipped, that shift
   amount is the first thing to revisit, not the Whisper model size.

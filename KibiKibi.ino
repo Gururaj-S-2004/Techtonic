@@ -509,9 +509,9 @@ void showStatus(const char *title, const char *body, uint16_t titleColor) {
   tft.setTextSize(1);
   tft.setTextColor(COL_ACCENT);
   tft.setCursor(44, 6);
-  tft.print("EVENT ROBOT");
+  tft.print("KIBI-KIBI");
   tft.setCursor(45, 6); // 1px overdraw = cheap faux-bold
-  tft.print("EVENT ROBOT");
+  tft.print("KIBI-KIBI");
 
   // Reset animation so the icon redraws immediately at frame 0 for this screen
   animFrame = 0;

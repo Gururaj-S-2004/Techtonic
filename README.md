@@ -1,4 +1,4 @@
-# EventRobot — AI Event-Kiosk Robot
+# Kibi-Kibi — AI Event-Kiosk Robot
 
 A physical kiosk robot for events/exhibitions that greets visitors, listens
 to their spoken questions, and answers out loud using a mix of **offline
@@ -11,7 +11,7 @@ sensors, mic, speaker, servo, display) paired with a **laptop** (the
 
 At an event/exhibition booth, staff repeatedly answer the same handful of
 questions ("Where's registration?", "What time does it start?", "Where's
-the main hall?"). EventRobot stands at the booth, waves and greets people
+the main hall?"). Kibi-Kibi stands at the booth, waves and greets people
 who walk up or press a button, listens to their question, and answers it
 using facts you provide about *your specific event* — freeing up staff and
 giving the booth a novelty/attraction factor.
@@ -24,7 +24,7 @@ it is explicitly instructed never to invent facts about your event.
 
 ## What has been built so far
 
-- **`EventRobot.ino`** — firmware for the ESP32-S3: reads the button and
+- **`KibiKibi.ino`** — firmware for the ESP32-S3: reads the button and
   ultrasonic sensor, drives the waving servo, RGB status LED and OLED
   status screen, captures microphone audio and streams it to the laptop,
   and plays back the synthesized answer through the speaker amp. Runs a
@@ -36,7 +36,7 @@ it is explicitly instructed never to invent facts about your event.
     forever.
   - `serial_link.py` — the Python half of the wire protocol (must always
     stay in sync with the `WIRE PROTOCOL` comment block at the top of
-    `EventRobot.ino`).
+    `KibiKibi.ino`).
   - `stt.py` — offline speech-to-text using **faster-whisper**.
   - `rulebook.py` — local keyword search over `data/rulebook.json` (your
     event facts), used to ground the LLM so it doesn't hallucinate.
@@ -121,7 +121,7 @@ to the laptop over the USB cable.
 ## Circuit / wiring connections
 
 All pin numbers below are ESP32-S3 GPIO numbers, exactly as defined at the
-top of `EventRobot.ino` (`#define PIN_...`). If you use a different board
+top of `KibiKibi.ino` (`#define PIN_...`). If you use a different board
 layout, only the `#define` block needs to change — nothing else in the
 firmware.
 
@@ -214,7 +214,7 @@ boards/wiring combinations land the data on the other slot.
    - (the I2S driver used, `driver/i2s.h`, ships with the ESP32 core — no
      separate install needed)
 4. Wire up the hardware exactly as in the tables above.
-5. Open `EventRobot.ino`, select the correct COM port, and click **Upload**.
+5. Open `KibiKibi.ino`, select the correct COM port, and click **Upload**.
 6. Open the Serial Monitor at **921600 baud** — after boot you should see
    `STATUS:READY` and the OLED should show "Ready / Press button or stand
    close".
@@ -312,14 +312,14 @@ pytest tests/ -v
 `tests/test_offline_cycle.py` runs a full trigger → greet → listen →
 processing → speak → idle cycle against an in-memory fake serial pair, with
 STT/TTS/LLM monkeypatched out. It exists to catch wire-protocol mismatches
-between `main.py` / `serial_link.py` and `EventRobot.ino` without needing a
+between `main.py` / `serial_link.py` and `KibiKibi.ino` without needing a
 board plugged in — useful for developing away from the physical kiosk.
 
 ## The wire protocol (laptop ↔ ESP32)
 
 Plain ASCII lines over USB serial at **921600 baud**. Documented in full,
 and kept in sync, in two places: the `WIRE PROTOCOL` comment block at the
-top of `EventRobot.ino`, and the module docstring in
+top of `KibiKibi.ino`, and the module docstring in
 `robot_backend/serial_link.py`.
 
 **ESP32 → laptop:**
@@ -346,14 +346,14 @@ If you ever change one side of this protocol, change the other and re-run
   repeatedly to "fix" a stuck interaction if the board itself is fine —
   each restart reboots it.
 - **Fixed 5-second listening window** — `RECORD_SECONDS` in
-  `EventRobot.ino` is a fixed capture window, not silence-detected. A
+  `KibiKibi.ino` is a fixed capture window, not silence-detected. A
   visitor who talks past 5 seconds gets truncated. If that's a problem
   live, raise `RECORD_SECONDS` in the firmware and reflash.
 - **CRC mismatches are logged, not retried** — both directions verify a
   CRC32 checksum but there's no automatic re-send; a bad frame just aborts
   that one interaction and the kiosk returns to idle. Fine for light foot
   traffic, not designed for a long/lossy cable.
-- **Mic gain shift (`>>14`) in `EventRobot.ino`** — tuned by feel, not
+- **Mic gain shift (`>>14`) in `KibiKibi.ino`** — tuned by feel, not
   measured. If STT accuracy is poor, check the transcript logged by
   `stt.py` first; if it's consistently garbled or clipped, revisit that
   shift amount before reaching for a bigger Whisper model.
@@ -366,8 +366,8 @@ If you ever change one side of this protocol, change the other and re-run
 ## Project structure
 
 ```
-event robo/
-├── EventRobot.ino              ESP32-S3 firmware
+kibi-kibi/
+├── KibiKibi.ino                 ESP32-S3 firmware
 └── robot_backend/              Laptop-side Python backend
     ├── main.py                 Orchestrator loop
     ├── serial_link.py          Wire-protocol transport
