@@ -1,9 +1,9 @@
 """Text-to-speech via Piper (offline, local .onnx voice model).
 
-Piper voices typically synthesize at 22050 Hz; we resample to
-config.AUDIO_SAMPLE_RATE (16000, matching EventRobot.ino's I2S speaker
-config) with simple linear interpolation - good enough for spoken-word
-audio and avoids pulling in scipy/audioop just for this.
+Audio is now played directly on the laptop's own speaker via sounddevice.
+We return the raw PCM at the voice's native sample rate (typically 22050 Hz)
+so no resampling is needed, giving better audio quality than the old
+16 kHz downsampled stream that was sent to the ESP32 amplifier.
 """
 from __future__ import annotations
 
@@ -28,43 +28,29 @@ def _get_voice():
     return _voice
 
 
-def _resample_linear(samples: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
-    if orig_sr == target_sr or len(samples) == 0:
-        return samples
-    duration = len(samples) / orig_sr
-    n_target = max(1, int(round(duration * target_sr)))
-    x_old = np.linspace(0, duration, num=len(samples), endpoint=False)
-    x_new = np.linspace(0, duration, num=n_target, endpoint=False)
-    resampled = np.interp(x_new, x_old, samples.astype(np.float32))
-    return resampled.astype(np.int16)
-
-
-def synthesize(text: str) -> bytes:
-    """Returns raw PCM16LE mono bytes at config.AUDIO_SAMPLE_RATE, ready to
-    hand straight to SerialLink.send_audio_frame()."""
+def synthesize(text: str) -> tuple[bytes, int]:
+    """Returns (raw PCM16LE mono bytes, sample_rate_hz) at the voice's native
+    sample rate, ready to be played directly on the laptop speaker via
+    sounddevice.  Returns (b"", 16000) on empty or failed synthesis."""
     if not text.strip():
-        return b""
+        return b"", config.AUDIO_SAMPLE_RATE
 
     voice = _get_voice()
     # voice.synthesize() yields one AudioChunk per sentence (mono int16 PCM
-    # at the voice's native sample rate) - concatenate them all before
-    # resampling once, rather than resampling per-sentence.
+    # at the voice's native sample rate) - concatenate them all.
     chunks = list(voice.synthesize(text))
     if not chunks:
-        return b""
+        return b"", config.AUDIO_SAMPLE_RATE
 
-    frame_rate = chunks[0].sample_rate
+    sample_rate = chunks[0].sample_rate
     samples = np.concatenate(
         [np.frombuffer(c.audio_int16_bytes, dtype="<i2") for c in chunks]
     )
-
-    resampled = _resample_linear(samples, frame_rate, config.AUDIO_SAMPLE_RATE)
-    pcm_bytes = resampled.astype("<i2").tobytes()
+    pcm_bytes = samples.astype("<i2").tobytes()
     logger.info(
-        "TTS %r -> %.2fs audio (%dHz source, resampled to %dHz)",
+        "TTS %r -> %.2fs audio at %dHz",
         text,
-        len(resampled) / config.AUDIO_SAMPLE_RATE,
-        frame_rate,
-        config.AUDIO_SAMPLE_RATE,
+        len(samples) / sample_rate,
+        sample_rate,
     )
-    return pcm_bytes
+    return pcm_bytes, sample_rate

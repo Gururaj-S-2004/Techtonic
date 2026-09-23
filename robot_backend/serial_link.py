@@ -12,24 +12,19 @@ println() but both sides strip trailing '\\r\\n'):
     STATUS:<text>
     TRIGGER:BUTTON | TRIGGER:PROXIMITY
     ERROR:<text>
-    AUDIO_START:<len>:<crc32>  (+ <len> raw PCM16LE mono 16kHz bytes,
-                                 + one blank-line separator, + "AUDIO_END")
 
   laptop -> ESP32:
     COMMAND:GREET | COMMAND:LISTEN | COMMAND:PROCESSING |
-    COMMAND:SPEAK (+ one AUDIO_START/.../AUDIO_END frame) | COMMAND:IDLE
+    COMMAND:SPEAK (laptop plays TTS on its own speaker, then sends
+                   COMMAND:IDLE when done) | COMMAND:IDLE
 """
 from __future__ import annotations
 
 import logging
-import re
 import time
-import zlib
 from typing import Optional, Protocol
 
 logger = logging.getLogger("robot_backend.serial_link")
-
-AUDIO_START_RE = re.compile(r"^AUDIO_START:(\d+):(\d+)$")
 
 # Must match EventRobot.ino's SERIAL_BAUD.
 DEFAULT_BAUD = 921600
@@ -137,84 +132,6 @@ class SerialLink:
         if line.startswith("ERROR:"):
             raise SerialLinkError(f"ESP32 reported error: {line[len('ERROR:'):]}")
         raise SerialLinkError(f"expected STATUS:{expected}, got: {line!r}")
-
-    # -- audio framing ----------------------------------------------------
-
-    def read_audio_frame(self, timeout: Optional[float] = None) -> bytes:
-        """Blocks for one AUDIO_START:<len>:<crc32> / bytes / AUDIO_END
-        frame and returns the raw PCM16LE mono bytes."""
-        header = self.readline(timeout=timeout)
-        m = AUDIO_START_RE.match(header)
-        if not m:
-            raise SerialLinkError(f"expected AUDIO_START, got: {header!r}")
-        length = int(m.group(1))
-        expected_crc = int(m.group(2))
-
-        payload = self._read_exact(length, timeout=timeout or self._default_timeout)
-
-        # One blank-line separator, then the AUDIO_END line - see the
-        # matching comment in EventRobot.ino's streamMicToBackend().
-        self.readline(timeout=2.0)
-        end_line = self.readline(timeout=2.0)
-        if end_line != "AUDIO_END":
-            raise SerialLinkError(f"expected AUDIO_END, got: {end_line!r}")
-
-        actual_crc = zlib.crc32(payload) & 0xFFFFFFFF
-        if actual_crc != expected_crc:
-            raise SerialLinkError(
-                f"audio CRC mismatch: expected {expected_crc}, got {actual_crc} "
-                f"({len(payload)} bytes) - stream may be desynced"
-            )
-        return payload
-
-    def send_audio_frame(self, pcm_bytes: bytes, baud: int = 921600):
-        """Sends one AUDIO_START:<len>:<crc32> / bytes / AUDIO_END frame.
-
-        Paces writes to stay within the ESP32's UART RX buffer capacity.
-        921600 baud = ~92160 bytes/sec on the wire.
-
-        IMPORTANT - Windows timer resolution:
-        time.sleep() on Windows defaults to 15.6ms granularity. Any sleep
-        shorter than ~16ms is effectively sleep(0), blasting bytes at OS
-        buffer speed (~800KB/s) instead of wire speed (~92KB/s), which
-        overflows the ESP32's UART RX buffer and causes:
-          - GetOverlappedResult errors in the Windows serial driver
-          - Dropped/corrupted bytes on the ESP32
-          - Crackling at the end of audio playback
-
-        Fix: use 4096-byte chunks so sleep_per_chunk ≈ 74ms, which is
-        safely above the 15.6ms Windows timer floor. At 60% of line speed
-        the ESP32 always has comfortable headroom to drain the UART while
-        simultaneously feeding the I2S speaker pipeline.
-        """
-        crc = zlib.crc32(pcm_bytes) & 0xFFFFFFFF
-        self._stream.write(f"AUDIO_START:{len(pcm_bytes)}:{crc}\n".encode("utf-8"))
-        self._stream.flush()
-
-        bytes_per_sec = baud / 10  # 8N1 = 10 bits per byte
-        # 60% utilization → sleep_per_chunk for 4096-byte chunk ≈ 74ms.
-        # This is reliable on Windows where time.sleep has 15.6ms resolution.
-        target_bytes_per_sec = bytes_per_sec * 0.60
-        chunk_size = 4096
-        sleep_per_chunk = chunk_size / target_bytes_per_sec
-        # Hard floor: never sleep less than 30ms regardless of baud setting.
-        sleep_per_chunk = max(sleep_per_chunk, 0.030)
-
-        logger.debug(
-            "Sending %d bytes in %d-byte chunks, %.1fms inter-chunk sleep (%.0f%% line speed)",
-            len(pcm_bytes), chunk_size, sleep_per_chunk * 1000,
-            (chunk_size / sleep_per_chunk) / bytes_per_sec * 100,
-        )
-
-        for offset in range(0, len(pcm_bytes), chunk_size):
-            chunk = pcm_bytes[offset : offset + chunk_size]
-            self._stream.write(chunk)
-            self._stream.flush()
-            time.sleep(sleep_per_chunk)
-
-        self._stream.write(b"\n")  # blank-line separator, mirrors EventRobot.ino
-        self._stream.write(b"AUDIO_END\n")
-        self._stream.flush()
 
     def _read_exact(self, length: int, timeout: float) -> bytes:
         buf = bytearray()

@@ -1,41 +1,31 @@
-#include <SPI.h>
+﻿#include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
 #include <ESP32Servo.h>
-#include <driver/i2s.h>
-#include <math.h>
 #include <WiFi.h>
 
 // ============================================================================
 // WIRE PROTOCOL (USB Serial, 921600 baud, matches robot_backend/serial_link.py)
-// ----------------------------------------------------------------------------
+// -----------------------------------------------------------------------------
 // ESP32 -> laptop (ASCII lines, '\n'-terminated unless noted):
 //   STATUS:<text>              informational, laptop just logs it
 //     STATUS:LISTEN_READY      signals the laptop to start recording from its
 //                               own microphone (no audio captured on ESP32)
-//     STATUS:GREETING_DONE     greeting animation + tone complete
+//     STATUS:GREETING_DONE     greeting animation complete
 //     STATUS:IDLE              interaction finished, back to idle
 //   TRIGGER:BUTTON              button pressed while idle
 //   TRIGGER:PROXIMITY           someone detected in range while idle
 //   ERROR:<text>                something went wrong on the ESP32 side
-//   AUDIO_START:<len>:<crc32>   begins a raw PCM16LE mono 16kHz payload of
-//                                exactly <len> bytes, immediately followed by
-//                                those <len> raw bytes (NOT text, no
-//                                delimiters inside), then a bare line:
-//   AUDIO_END                   payload complete; CRC32 (IEEE 802.3 poly,
-//                                same as Python's zlib.crc32) covers exactly
-//                                those <len> bytes
 //
 // laptop -> ESP32 (ASCII lines):
-//   COMMAND:GREET                play wave + greeting tone (local, no audio)
+//   COMMAND:GREET                play wave animation (local, no audio)
 //   COMMAND:LISTEN               ESP32 signals LISTEN_READY; laptop records
 //                                 from its own mic, sends STATUS:RECORDING_DONE
-//                                 when finished - no audio is streamed from
-//                                 ESP32 in this direction
+//                                 when finished
 //   COMMAND:PROCESSING           purely a status hint ("Thinking...")
-//   COMMAND:SPEAK                followed immediately by one
-//                                 AUDIO_START:<len>:<crc32> / bytes / AUDIO_END
-//                                 frame that the ESP32 should play out loud
+//   COMMAND:SPEAK                laptop will play TTS audio on its own speaker;
+//                                 ESP32 just updates the display and waits for
+//                                 COMMAND:IDLE
 //   COMMAND:IDLE                 return to idle / reset
 //   STATUS:RECORDING_DONE        laptop finished capturing from its own mic
 //
@@ -64,13 +54,11 @@
 #define PIN_TFT_SCLK 12    // SCL / SCK / CLK
 // Note: Connect TFT BLK/LED to 3.3V, VCC to 3.3V (or 5V), GND to GND
 
-// Microphone: audio is now captured by the laptop's own mic.
-// The INMP441 I2S mic has been removed. No mic pins are needed on the ESP32.
+// Audio: all audio is now played by the laptop's own speaker.
+// The MAX98357A I2S amplifier has been removed. No speaker pins are needed.
 
-// MAX98357A amplifier (I2S output, uses I2S peripheral #1)
-#define PIN_SPK_BCLK 1     // BCLK
-#define PIN_SPK_LRC  2     // LRC / WS
-#define PIN_SPK_DOUT 38    // DIN on the MAX98357A. Tie its SD pin high (always on) or to a spare GPIO.
+// Microphone: audio is captured by the laptop's own mic.
+// The INMP441 I2S mic has been removed. No mic pins are needed on the ESP32.
 
 // ============================================================================
 // 1.8" TFT SPI CONFIG (ST7735 128x160)
@@ -80,7 +68,6 @@
 // Pass the SPI class explicitly to ensure it uses the custom pins on ESP32-S3
 Adafruit_ST7735 tft = Adafruit_ST7735(&SPI, PIN_TFT_CS, PIN_TFT_DC, PIN_TFT_RST);
 bool tftReady = false;
-bool tftBusy = false;  // true while audio is playing - blocks TFT SPI to prevent bus contention
 
 // ============================================================================
 // SERVO CONFIG
@@ -96,33 +83,9 @@ Servo handServo;
 #define ULTRASONIC_TIMEOUT_US 30000UL  // ~5 m max range
 
 // ============================================================================
-// AUDIO CONFIG
+// SERIAL TIMEOUT
 // ============================================================================
-#define SAMPLE_RATE          16000
-#define I2S_SPK_PORT         I2S_NUM_0    // only one I2S port needed now (speaker)
-#define CHUNK_SAMPLES         512          // mono samples per I2S write chunk (32ms at 16kHz)
-// DMA depth: 4 buffers × 512 stereo samples = 128ms of pipeline depth.
-// Keeps drain time short (128ms + 50ms margin = ~180ms) so the TFT SPI
-// transaction in returnToIdle() never overlaps with active I2S DMA.
-#define I2S_DMA_BUF_COUNT    4
-#define I2S_DMA_BUF_LEN      CHUNK_SAMPLES  // stereo samples per DMA buffer
-#define SERIAL_CMD_TIMEOUT_MS  20000       // how long to wait for a laptop command/audio
-
-// CRC32 (IEEE 802.3, same polynomial/algorithm as Python's zlib.crc32).
-// Incremental API so multi-chunk streams can be verified without buffering
-// the whole payload: crc32Init() -> crc32Update() per chunk -> crc32Final().
-static const uint32_t CRC32_POLY = 0xEDB88320UL;
-uint32_t crc32Init() { return 0xFFFFFFFFUL; }
-uint32_t crc32Update(uint32_t crc, const uint8_t *data, size_t len) {
-  for (size_t i = 0; i < len; i++) {
-    crc ^= data[i];
-    for (int b = 0; b < 8; b++) {
-      crc = (crc >> 1) ^ (CRC32_POLY & (~(crc & 1) + 1));
-    }
-  }
-  return crc;
-}
-uint32_t crc32Final(uint32_t crc) { return crc ^ 0xFFFFFFFFUL; }
+#define SERIAL_CMD_TIMEOUT_MS  20000       // how long to wait for a laptop command
 
 // ============================================================================
 // STATE MACHINE
@@ -154,8 +117,6 @@ void showIdleDistance(long dist);
 // ============================================================================
 void setup() {
   // 32 KB RX buffer: at 921600 baud (~92 KB/s) this gives ~350ms of headroom.
-  // The laptop sends audio in paced 1KB chunks but Windows timer granularity
-  // can cause bursts; a large buffer absorbs them without dropping bytes.
   Serial.setRxBufferSize(32768);
   Serial.begin(SERIAL_BAUD);
   unsigned long bootStart = millis();
@@ -165,7 +126,6 @@ void setup() {
   setupTFT();
   setupServo();
   setupTriggers();
-  setupSpeakerI2S();
 
   showStatus("Ready", "Press button\nor stand\nclose to\nstart");
   sendStatus("READY");
@@ -224,7 +184,7 @@ void loop() {
 // FULL INTERACTION SEQUENCE
 // ============================================================================
 void runInteraction(const char *triggerSource) {
-  // Turn off Wi-Fi during interaction to prevent audio interference/glitches
+  // Turn off Wi-Fi during interaction to prevent radio interference
   WiFi.mode(WIFI_OFF);
 
   Serial.print("TRIGGER:");
@@ -240,11 +200,9 @@ void runInteraction(const char *triggerSource) {
   currentState = STATE_GREETING;
   showStatus("Hello!", "Ask your\nquestion\nafter beep");
   waveServo();
-  playGreetingTone();
-  drainAudioPipeline(); // flush DMA before any subsequent TFT SPI access
   sendStatus("GREETING_DONE");
 
-  // --- 2. Wait for COMMAND:LISTEN, then capture + stream mic audio ---
+  // --- 2. Wait for COMMAND:LISTEN, then signal laptop to record ---
   cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
   if (cmd != "LISTEN") {
     sendError("Expected LISTEN, got: " + cmd);
@@ -259,10 +217,7 @@ void runInteraction(const char *triggerSource) {
   currentState = STATE_WAITING_RESPONSE;
   showStatus("Thinking...", "Please wait");
 
-  // Save the displayed text so we can re-show it on the TFT after audio
-  // finishes. Without this, returnToIdle() immediately overwrites the
-  // answer with "Ready" the moment playback ends, making the TFT appear
-  // de-synced from the Python terminal which still shows the answer.
+  // Save the displayed text so we can re-show it on the TFT while the laptop speaks.
   String lastAnswer = "";
 
   cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
@@ -282,30 +237,23 @@ void runInteraction(const char *triggerSource) {
   }
 
   if (cmd == "SPEAK") {
+    // The laptop plays TTS audio on its own speaker.
+    // We just show the answer on the TFT and wait for COMMAND:IDLE.
     currentState = STATE_SPEAKING;
-    // tftBusy blocks showStatus()/showIdleDistance() so SPI never runs
-    // while I2S DMA is active (both use GDMA on ESP32-S3; simultaneous
-    // transfers corrupt each other, causing the crackle+glitch symptom).
-    tftBusy = true;
-    if (!receiveAndPlayAudio()) {
-      sendError("Failed to receive/play TTS audio");
-    }
-    drainAudioPipeline(); // wait for DMA to empty *before* clearing the flag
-    tftBusy = false;      // only now is it safe to write to TFT
-
-    // Re-show the answer after audio finishes so the TFT stays in sync
-    // with the terminal. Without this the display jumps straight to
-    // "Ready" the moment the last DMA buffer drains, while the Python
-    // backend log still shows the answer text.
-    if (lastAnswer.length() > 0) {
-      showStatus("Answer:", lastAnswer.c_str(), ST7735_CYAN);
-      delay(4000); // keep the answer visible for 4 seconds
+    // Use a generous timeout: long answers can take many seconds to speak.
+    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS * 3);
+    if (cmd != "IDLE") {
+      sendError("Expected IDLE after SPEAK, got: " + cmd);
+    } else {
+      // Keep the answer on screen briefly after speech ends
+      if (lastAnswer.length() > 0) {
+        delay(2000);
+      }
     }
   } else if (cmd == "IDLE") {
     // backend gave up / had nothing to say - but still show the answer
     // if we got one (e.g. TTS failed), so the TFT is never blank.
     if (lastAnswer.length() > 0) {
-      showStatus("Answer:", lastAnswer.c_str(), ST7735_CYAN);
       delay(4000);
     }
   } else {
@@ -423,7 +371,7 @@ void setupTFT() {
 }
 
 void showStatus(const char *title, const char *body, uint16_t titleColor) {
-  if (!tftReady || tftBusy) return;  // skip during audio - I2S DMA and SPI must not overlap
+  if (!tftReady) return;
 
   if (titleColor == 0) {
     if (strcmp(title, "Ready") == 0) titleColor = ST7735_GREEN;
@@ -502,7 +450,7 @@ void showStatus(const char *title, const char *body, uint16_t titleColor) {
 }
 
 void showIdleDistance(long dist) {
-  if (!tftReady || tftBusy) return;  // skip during audio - I2S DMA and SPI must not overlap
+  if (!tftReady) return;
   // Clear only the bottom sensor status area (y=107 to 127) to avoid screen flicker
   // and preserve all 4 lines of textSize=2 body text above (ends at y=102).
   tft.fillRect(0, 107, 160, 21, ST7735_BLACK);
@@ -540,9 +488,6 @@ void streamMicToBackend() {
   // Wait until the laptop confirms it has finished recording.
   // The backend sends back "STATUS:RECORDING_DONE" as a plain line
   // (not a COMMAND: prefix) to distinguish it from the normal command flow.
-  // readLineBlocking() already polls Serial.available() internally with 2ms
-  // granularity — no outer Serial.available() wrapper is needed, and the
-  // old nested timeout clocks were not coordinated with each other.
   unsigned long start = millis();
   while (millis() - start < SERIAL_CMD_TIMEOUT_MS) {
     String line = readLineBlocking(200);
@@ -553,164 +498,13 @@ void streamMicToBackend() {
 }
 
 // ============================================================================
-// SPEAKER (MAX98357A) - I2S output
-// Note: this is now the ONLY I2S peripheral in use (I2S_SPK_PORT = I2S_NUM_0).
-//       The mic I2S peripheral (#1) has been removed along with the INMP441.
+// SERIAL LINE UTILITIES
 // ============================================================================
-void setupSpeakerI2S() {
-  i2s_config_t spkConfig = {
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
-    .sample_rate = SAMPLE_RATE,
-    .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
-    .channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT, // MAX98357A wants a stereo frame
-    .communication_format = I2S_COMM_FORMAT_STAND_I2S,
-    .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
-    // I2S_DMA_BUF_LEN is in stereo samples (CHUNK_SAMPLES*2).
-    // 8 buffers at that size gives ~128ms of audio pipeline depth,
-    // eliminating DMA underruns that cause crackling.
-    .dma_buf_count = I2S_DMA_BUF_COUNT,
-    .dma_buf_len = I2S_DMA_BUF_LEN,
-    .use_apll = true,   // use APLL for a cleaner clock - reduces jitter/noise
-    .tx_desc_auto_clear = true,
-    .fixed_mclk = 0
-  };
-  i2s_pin_config_t spkPins = {
-    .bck_io_num = PIN_SPK_BCLK,
-    .ws_io_num = PIN_SPK_LRC,
-    .data_out_num = PIN_SPK_DOUT,
-    .data_in_num = I2S_PIN_NO_CHANGE
-  };
-
-  i2s_driver_install(I2S_SPK_PORT, &spkConfig, 0, NULL);
-  i2s_set_pin(I2S_SPK_PORT, &spkPins);
-  i2s_zero_dma_buffer(I2S_SPK_PORT);
-}
-
-// Software volume scale: 0.0 (silent) to 1.0 (full).
-// Reducing below 1.0 cuts peak current draw from the MAX98357A, which
-// reduces power rail droops that cause TFT SPI corruption (glitching).
-// Increase back to 1.0 once decoupling capacitors are installed.
-#define AUDIO_VOLUME_SCALE  0.70f
-
-// Writes one chunk of mono 16-bit PCM samples out to the speaker,
-// duplicating each sample into a stereo (L=R) frame.
-void playMonoPCM(const int16_t *mono, size_t sampleCount) {
-  static int16_t stereo[CHUNK_SAMPLES * 2];
-  size_t offset = 0;
-  while (offset < sampleCount) {
-    size_t n = sampleCount - offset;
-    if (n > CHUNK_SAMPLES) n = CHUNK_SAMPLES;
-    for (size_t i = 0; i < n; i++) {
-      int32_t s = (int32_t)(mono[offset + i] * AUDIO_VOLUME_SCALE);
-      // Clamp to int16 range to prevent wrap-around distortion
-      if (s >  32767) s =  32767;
-      if (s < -32768) s = -32768;
-      stereo[2 * i]     = (int16_t)s;
-      stereo[2 * i + 1] = (int16_t)s;
-    }
-    size_t bytesWritten = 0;
-    i2s_write(I2S_SPK_PORT, stereo, n * 2 * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
-    offset += n;
-  }
-}
-
-// Writes one buffer of silence then delays long enough for all DMA buffers
-// to drain at the hardware level.  Call after every audio sequence (TTS reply
-// and greeting tone) so the I2S GDMA is fully idle before returnToIdle()
-// writes to the TFT - otherwise the SPI GDMA and I2S GDMA clash, producing
-// the simultaneous crackle + display glitch observed during testing.
-void drainAudioPipeline() {
-  // One extra chunk of silence pushes any partial last DMA buffer through.
-  static int16_t silence[CHUNK_SAMPLES] = {0};
-  playMonoPCM(silence, CHUNK_SAMPLES);
-  // Wait for all remaining DMA buffers to finish playing.
-  // drain_ms = (buf_count * buf_len samples) / sample_rate
-  const uint32_t drainMs =
-      ((uint32_t)I2S_DMA_BUF_COUNT * I2S_DMA_BUF_LEN * 1000UL) / SAMPLE_RATE;
-  delay(drainMs + 50); // +50 ms safety margin
-}
-
-// A short two-tone chirp played locally (no laptop round trip) right after a
-// trigger, so the visitor gets an instant audible cue to start speaking.
-void playGreetingTone() {
-  static int16_t tone[CHUNK_SAMPLES];
-  const float freqs[2] = {880.0f, 1320.0f};
-
-  for (int t = 0; t < 2; t++) {
-    uint32_t phaseCounter = 0;
-    for (int rep = 0; rep < (SAMPLE_RATE / 4) / CHUNK_SAMPLES; rep++) {
-      for (int i = 0; i < CHUNK_SAMPLES; i++) {
-        float angle = 2.0f * PI * freqs[t] * ((float)phaseCounter / SAMPLE_RATE);
-        tone[i] = (int16_t)(3000.0f * sinf(angle));
-        phaseCounter++;
-      }
-      playMonoPCM(tone, CHUNK_SAMPLES);
-    }
-  }
-}
-
-// Reads one AUDIO_START:<len>:<crc32> / bytes / AUDIO_END frame from the
-// laptop and plays it as it arrives (chunked, no giant single malloc).
-bool receiveAndPlayAudio() {
-  String header = readLineBlocking(SERIAL_CMD_TIMEOUT_MS);
-  if (!header.startsWith("AUDIO_START:")) {
-    sendError("Expected AUDIO_START, got: " + header);
-    return false;
-  }
-
-  int firstColon = header.indexOf(':', 12);
-  if (firstColon < 0) {
-    sendError("Malformed AUDIO_START header");
-    return false;
-  }
-  uint32_t length = (uint32_t)header.substring(12, firstColon).toInt();
-  uint32_t expectedCrc = (uint32_t)strtoul(header.substring(firstColon + 1).c_str(), nullptr, 10);
-
-  static uint8_t buf[CHUNK_SAMPLES * sizeof(int16_t)];
-  uint32_t remaining = length;
-  uint32_t runningCrc = crc32Init();
-
-  while (remaining > 0) {
-    uint32_t toRead = remaining < sizeof(buf) ? remaining : sizeof(buf);
-    // Keep reads on 16-bit sample boundaries so playMonoPCM never sees a
-    // half-sample; audio length is always even in this protocol anyway.
-    toRead -= (toRead % sizeof(int16_t));
-    if (toRead == 0) toRead = remaining; // final odd byte (shouldn't happen)
-
-    if (!readExactBlocking(buf, toRead, SERIAL_CMD_TIMEOUT_MS)) {
-      sendError("Timed out reading audio payload");
-      return false;
-    }
-    runningCrc = crc32Update(runningCrc, buf, toRead);
-    // Played as it arrives (can't buffer an unbounded reply in ~320KB of
-    // SRAM); a CRC mismatch is only detectable *after* playback, so on
-    // mismatch we just report it - useful for catching a desynced stream
-    // during bring-up, but it can't undo audio already sent to the amp.
-    playMonoPCM((const int16_t *)buf, toRead / sizeof(int16_t));
-    remaining -= toRead;
-  }
-
-  // One blank-line separator (see streamMicToBackend()'s matching note),
-  // then the actual "AUDIO_END" line.
-  readLineBlocking(2000);
-  String endLine = readLineBlocking(2000);
-  if (endLine != "AUDIO_END") {
-    sendError("Expected AUDIO_END, got: " + endLine);
-    return false;
-  }
-
-  uint32_t actualCrc = crc32Final(runningCrc);
-  if (actualCrc != expectedCrc) {
-    sendError("TTS audio CRC mismatch - stream may be corrupted/desynced");
-    return false;
-  }
-  return true;
-}
 
 // Blocks until a full line (up to '\n') is available, or timeout. Trimmed,
 // so a trailing '\r' from a '\r\n'-terminated sender (e.g. Python's
 // pyserial writing "...\r\n", or Serial.println()'s own "\r\n") never
-// leaks into line-equality checks like `endLine != "AUDIO_END"`.
+// leaks into line-equality checks.
 String readLineBlocking(unsigned long timeoutMs) {
   unsigned long start = millis();
   while (millis() - start < timeoutMs) {
@@ -722,23 +516,4 @@ String readLineBlocking(unsigned long timeoutMs) {
     delay(2);
   }
   return "";
-}
-
-// Blocks until exactly `length` bytes are read into buffer, or timeout.
-bool readExactBlocking(uint8_t *buffer, size_t length, unsigned long timeoutMs) {
-  size_t received = 0;
-  unsigned long start = millis();
-  while (received < length) {
-    if (millis() - start > timeoutMs) return false;
-    int avail = Serial.available();
-    if (avail <= 0) {
-      delay(1);
-      continue;
-    }
-    size_t toRead = (size_t)avail < (length - received) ? (size_t)avail : (length - received);
-    int n = Serial.readBytes(buffer + received, toRead);
-    if (n <= 0) continue;
-    received += n;
-  }
-  return true;
 }

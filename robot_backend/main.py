@@ -9,6 +9,9 @@ import logging
 import time
 import textwrap
 
+import numpy as np
+import sounddevice as sd
+
 import config
 import llm
 import mic
@@ -77,17 +80,30 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
     clean_a = format_for_display(answer, width=12, max_lines=5)
     link.send_command(f"DISPLAY_A:{clean_a}")
 
-    audio_bytes = tts.synthesize(answer)
-    if not audio_bytes:
+    pcm_bytes, sample_rate = tts.synthesize(answer)
+    if not pcm_bytes:
         link.send_command("IDLE")
         return
 
+    # Signal ESP32 that we are about to speak (it updates the display and waits).
     link.send_command("SPEAK")
-    link.send_audio_frame(audio_bytes)
+
+    # Play the TTS audio on the laptop's own speaker.
+    _play_audio(pcm_bytes, sample_rate)
+
+    # Tell the ESP32 we are done speaking so it can return to idle.
+    link.send_command("IDLE")
 
     # ESP32 always ends runInteraction() with STATUS:IDLE - wait for it so
     # the serial buffer is clean before we go back to wait_for_trigger().
     link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
+
+
+
+def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
+    """Plays raw PCM16LE mono audio on the laptop's default output device."""
+    samples = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32) / 32768.0
+    sd.play(samples, samplerate=sample_rate, blocking=True)
 
 
 def _generate_answer(question: str, rulebook: rulebook_mod.Rulebook) -> str:
