@@ -54,6 +54,18 @@ GROQ_MODEL = _env("GROQ_MODEL", "compound-mini")
 AUDIO_SAMPLE_RATE = _env_int("AUDIO_SAMPLE_RATE", 16000)
 AUDIO_SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM, must match EventRobot.ino
 
+# Brief dramatic pause after COMMAND:SPEAK (answer already shown on the
+# TFT) and before the voice actually starts - makes the robot feel like
+# it's "considering" the answer instead of blurting it out instantly,
+# which reads as more engaging to a watching crowd. Set to 0 to disable.
+PRE_SPEAK_DELAY_S = _env_float("PRE_SPEAK_DELAY_S", 1.0)
+
+# Trailing silence padded onto the end of every spoken answer so the audio
+# device's output stream has time to fully drain before playback stops -
+# without it, the last syllable of the answer can get clipped on some
+# Windows audio backends.
+TTS_TRAILING_SILENCE_S = _env_float("TTS_TRAILING_SILENCE_S", 0.4)
+
 # -- Laptop microphone (replaces INMP441 on the ESP32) ---------------------
 # How many seconds to capture from the laptop mic after COMMAND:LISTEN.
 MIC_RECORD_SECONDS = _env_float("MIC_RECORD_SECONDS", 5.0)

@@ -88,7 +88,13 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
     # Signal ESP32 that we are about to speak (it updates the display and waits).
     link.send_command("SPEAK")
 
-    # Play the TTS audio on the laptop's own speaker.
+    # Small deliberate pause before the voice starts - reads as the robot
+    # "considering" its answer rather than blurting it out, which is more
+    # engaging for a watching crowd. Set PRE_SPEAK_DELAY_S=0 to disable.
+    if config.PRE_SPEAK_DELAY_S > 0:
+        time.sleep(config.PRE_SPEAK_DELAY_S)
+
+    # Play the TTS audio on the laptop's own speaker, start to finish.
     _play_audio(pcm_bytes, sample_rate)
 
     # Tell the ESP32 we are done speaking so it can return to idle.
@@ -101,9 +107,19 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
 
 
 def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
-    """Plays raw PCM16LE mono audio on the laptop's default output device."""
+    """Plays raw PCM16LE mono audio on the laptop's default output device,
+    fully and clearly from start to end. A little trailing silence is
+    padded on so the output stream has time to drain before it stops -
+    otherwise the last syllable can get clipped on some Windows audio
+    backends."""
+    if not pcm_bytes:
+        return
     samples = np.frombuffer(pcm_bytes, dtype="<i2").astype(np.float32) / 32768.0
-    sd.play(samples, samplerate=sample_rate, blocking=True)
+    pad_len = int(sample_rate * config.TTS_TRAILING_SILENCE_S)
+    if pad_len:
+        samples = np.concatenate([samples, np.zeros(pad_len, dtype=np.float32)])
+    sd.play(samples, samplerate=sample_rate, blocking=False, latency="high")
+    sd.wait()
 
 
 def _generate_answer(question: str, rulebook: rulebook_mod.Rulebook) -> str:
