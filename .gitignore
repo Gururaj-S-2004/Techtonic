@@ -8,3 +8,4 @@ robot_backend/.pytest_cache/
 build/
 EventRobot/
 *.pyc
+.venv/
