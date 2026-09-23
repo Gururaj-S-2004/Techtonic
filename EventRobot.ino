@@ -119,6 +119,14 @@ Servo handServo;
 // SERIAL TIMEOUT
 // ============================================================================
 #define SERIAL_CMD_TIMEOUT_MS 20000 // how long to wait for a laptop command
+// The THINK phase (Groq LLM call in robot_backend/llm.py) retries up to 3x
+// with a 25s timeout and 2s backoff between attempts - up to ~79s worst
+// case - before Python ever sends DISPLAY_A/SPEAK back. If this window is
+// too short, the ESP32 gives up and silently reverts to the idle "Ready"
+// screen while Python is still mid-answer, desyncing the TFT from the
+// terminal/audio for the rest of that session. Must stay >= Python's worst
+// case LLM+TTS latency; see llm.py's retry loop before shrinking this.
+#define SERIAL_THINK_TIMEOUT_MS 90000
 
 // ============================================================================
 // STATE MACHINE
@@ -292,24 +300,32 @@ void runInteraction(const char *triggerSource) {
     showStatus("Thinking...", "Please wait");
     lastAnswer = "";
 
-    cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+    // Everything from here until SPEAK/IDLE arrives is bounded by the LLM's
+    // (and then TTS's) worst-case latency, not the usual quick-reply budget
+    // - see SERIAL_THINK_TIMEOUT_MS above.
+    cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     if (cmd == "PROCESSING") {
-      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+      cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
     if (cmd.startsWith("DISPLAY_Q:")) {
-      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+      cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
     if (cmd.startsWith("DISPLAY_A:")) {
       lastAnswer = cmd.substring(10);
+      // Switch state before drawing so the badge icon (mic/thinking-dots)
+      // doesn't linger stale over the answer text - the answer being shown
+      // is already the "about to speak" moment from the visitor's POV, even
+      // though the actual COMMAND:SPEAK hasn't arrived yet.
+      currentState = STATE_SPEAKING;
       showStatus("Answer:", lastAnswer.c_str());
-      cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
+      cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
 
     if (cmd == "SPEAK") {
       // Laptop plays TTS on its own speaker. Answer stays on TFT.
-      // We just update state and fall back to the top of the loop,
-      // where we wait (with extended timeout) for LISTEN or IDLE.
-      currentState = STATE_SPEAKING;
+      // currentState is already STATE_SPEAKING (set when the answer was
+      // displayed above); just fall back to the top of the loop, where we
+      // wait (with extended timeout) for LISTEN or IDLE.
     } else if (cmd == "IDLE") {
       // Session ended mid-round (TTS failed, or no answer).
       break;
