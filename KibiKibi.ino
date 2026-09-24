@@ -508,10 +508,10 @@ void showStatus(const char *title, const char *body, uint16_t titleColor) {
   tft.drawFastHLine(0, HEADER_H, TFT_WIDTH, COL_ACCENT);
   tft.setTextSize(1);
   tft.setTextColor(COL_ACCENT);
-  tft.setCursor(44, 6);
-  tft.print("KIBI-KIBI");
-  tft.setCursor(45, 6); // 1px overdraw = cheap faux-bold
-  tft.print("KIBI-KIBI");
+  tft.setCursor(38, 6);
+  tft.print("TECHTONIC 2026");
+  tft.setCursor(39, 6); // 1px overdraw = cheap faux-bold
+  tft.print("TECHTONIC 2026");
 
   // Reset animation so the icon redraws immediately at frame 0 for this screen
   animFrame = 0;
