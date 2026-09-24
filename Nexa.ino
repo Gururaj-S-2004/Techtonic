@@ -153,9 +153,18 @@ long lastReportedDistance = -999;
 
 // Persistent servo state driven by proximity (runs in ALL states)
 bool servoOn = false;
-// Set to true inside updateServoFromProximity() when the person walks away
-// during an active session — cleared when we return to idle.
+// Set to true inside updateServoFromProximity() ONLY after PERSON_LEFT_CONFIRM_COUNT
+// consecutive readings above 60cm — prevents single sensor spikes killing a session.
 bool personLeftDuringSession = false;
+int personLeftCount = 0;          // consecutive above-60cm readings counter
+#define PERSON_LEFT_CONFIRM_COUNT 5 // 5 x 100ms = 500ms debounce before PERSON_LEFT fires
+
+// Zone-cleared gate: welcome message + trigger only fires on a FRESH arrival
+// from a truly empty zone. Starts true so the very first detection works.
+// Resets to true only after ZONE_CLEAR_COUNT consecutive empty readings.
+bool zoneCleared = true;
+int  zoneEmptyCount = 0;
+#define ZONE_CLEAR_COUNT 10       // 10 x 100ms = 1s of empty readings to clear zone
 
 // Forward declarations - must appear before updateServoFromProximity() which
 // calls showIdleDistance(), sendStatus(), and readDistanceCM().
@@ -173,16 +182,27 @@ void updateServoFromProximity() {
   lastPingTime = millis();
   long dist = readDistanceCM();
   bool shouldBeOn = (dist > 0 && dist <= TRIGGER_DISTANCE_CM);
+
+  // Servo tracks proximity immediately (no debounce needed for actuator)
   if (shouldBeOn != servoOn) {
     servoOn = shouldBeOn;
     handServo.write(servoOn ? SERVO_WAVE_ANGLE : SERVO_REST_ANGLE);
-    // If person walks away during an active interaction, signal the backend
-    if (!servoOn && currentState != STATE_IDLE) {
+  }
+
+  // PERSON_LEFT is debounced: only fires after PERSON_LEFT_CONFIRM_COUNT
+  // consecutive above-60cm readings so a single sensor blip can't abort a
+  // live session. Counter resets the moment the person comes back in range.
+  if (!shouldBeOn && currentState != STATE_IDLE && !personLeftDuringSession) {
+    personLeftCount++;
+    if (personLeftCount >= PERSON_LEFT_CONFIRM_COUNT) {
       personLeftDuringSession = true;
       sendStatus("PERSON_LEFT");
     }
+  } else {
+    personLeftCount = 0; // person is in range (or we're idle) — reset counter
   }
-  // Also update the idle distance display when idle
+
+  // Update idle distance display only while idle
   if (currentState == STATE_IDLE) {
     if (abs(dist - lastReportedDistance) >= 2 ||
         (dist <= TRIGGER_DISTANCE_CM) != (lastReportedDistance <= TRIGGER_DISTANCE_CM)) {
@@ -245,12 +265,29 @@ void loop() {
 
     bool buttonTrigger = digitalRead(PIN_BUTTON) == LOW; // active-low button
 
-    // Proximity trigger (display update now handled inside
-    // updateServoFromProximity above)
-    bool proximityTrigger =
-        (lastReportedDistance > 0 && lastReportedDistance <= TRIGGER_DISTANCE_CM);
+    // Proximity trigger fires ONLY when the zone was confirmed empty first.
+    // This prevents re-triggering (and re-playing the welcome) when the same
+    // person is still standing within 60cm after a session ends.
+    bool proximityTrigger = false;
+    if (lastReportedDistance > 0 && lastReportedDistance <= TRIGGER_DISTANCE_CM) {
+      // Someone is in range
+      zoneEmptyCount = 0;         // reset empty counter — zone is occupied
+      if (zoneCleared) {
+        proximityTrigger = true;  // fresh arrival from empty zone
+      }
+    } else {
+      // Zone is empty (reading > 60cm or 9999)
+      if (zoneEmptyCount < ZONE_CLEAR_COUNT) {
+        zoneEmptyCount++;
+      }
+      if (zoneEmptyCount >= ZONE_CLEAR_COUNT) {
+        zoneCleared = true;       // zone confirmed empty — next person gets welcome
+      }
+    }
 
     if (buttonTrigger || proximityTrigger) {
+      zoneCleared = false;        // zone now occupied — block re-trigger until cleared
+      personLeftCount = 0;
       runInteraction(buttonTrigger ? "BUTTON" : "PROXIMITY");
       lastInteractionTime = millis();
       lastReportedDistance = -999;
@@ -794,14 +831,13 @@ void streamMicToBackend() {
     String line = readLineBlocking(200);
     updateAnimation();          // pulse the mic icon while the laptop records
     updateServoFromProximity(); // keep servo tracking sensor during mic wait
-    // Person walked away mid-recording — abort immediately
-    if (personLeftDuringSession) {
-      // Backend is still recording from the laptop mic; unblock it first by
-      // pretending recording is done, then the PERSON_LEFT status (already
-      // sent by updateServoFromProximity) causes the backend to abort.
-      sendStatus("RECORDING_DONE");
+    // Person left during recording — just return quietly. The backend's
+    // mic.record() will finish on its own, and _raise_if_person_left() will
+    // find STATUS:PERSON_LEFT in the buffer and raise PersonLeft cleanly.
+    // Do NOT send a spurious STATUS:RECORDING_DONE here; the laptop sends
+    // that direction, not the ESP32.
+    if (personLeftDuringSession)
       return;
-    }
     if (line == "STATUS:RECORDING_DONE")
       return;
     // Ignore stray lines (STATUS echoes, etc.) and keep waiting.

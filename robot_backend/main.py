@@ -71,9 +71,6 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
         logger.info("Recorded %.2fs of audio from laptop mic",
                     len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
 
-        # Check if person left while we were recording
-        _raise_if_person_left(link)
-
         question = stt.transcribe(pcm_audio)
 
         if not question:
@@ -136,17 +133,37 @@ def _raise_if_person_left(link: SerialLink) -> None:
     """Peeks at buffered serial lines (non-blocking) and raises PersonLeft if
     STATUS:PERSON_LEFT is in the incoming stream. Safe to call at any await
     point between serial commands."""
-    try:
-        # Drain up to 5 buffered lines without blocking
-        for _ in range(5):
+    person_left = False
+    for _ in range(5):
+        try:
             line = link.readline(timeout=0.05)
+        except SerialTimeout:
+            break  # no more buffered data
+        if line == "STATUS:PERSON_LEFT":
+            logger.info("Person left mid-session — aborting")
+            person_left = True
+        elif line.startswith("STATUS:"):
+            logger.info("[ESP32] %s", line[len("STATUS:"):])
+    if person_left:
+        raise PersonLeft()
+
+
+def _drain_until_idle(link: SerialLink, timeout: float = 5.0) -> None:
+    """Reads and discards all serial lines until STATUS:IDLE arrives or timeout.
+    Also consumes any stale STATUS:PERSON_LEFT lines so they cannot poison the
+    next session's _raise_if_person_left check."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            line = link.readline(timeout=0.3)
+            logger.debug("drain: %r", line)
+            if line == "STATUS:IDLE":
+                return
+            # Explicitly consume PERSON_LEFT so it never leaks into the next session
             if line == "STATUS:PERSON_LEFT":
-                logger.info("Person left mid-session — aborting")
-                raise PersonLeft()
-            if line.startswith("STATUS:"):
-                logger.info("[ESP32] %s", line[len("STATUS:"):])
-    except SerialTimeout:
-        pass  # no buffered data — that's fine
+                logger.debug("drain: consumed stale PERSON_LEFT")
+        except SerialTimeout:
+            continue
 
 
 def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
@@ -206,7 +223,9 @@ def main() -> None:
             try:
                 run_interaction(link, rulebook)
             except PersonLeft:
-                # Person walked away — say goodbye, then wait for next person
+                # Person walked away — say goodbye, sync ESP32 to idle,
+                # then wait a beat before accepting the next visitor so we
+                # don't immediately re-trigger on the same person.
                 logger.info("Session ended: visitor left. Speaking goodbye.")
                 # Tell ESP32 to reset to idle
                 try:
@@ -220,7 +239,15 @@ def main() -> None:
                         _play_audio(bye_pcm, bye_sr)
                 except Exception as e:
                     logger.warning("Goodbye TTS failed: %s", e)
-                logger.info("Goodbye spoken. Ready for next visitor.")
+                # Drain serial until STATUS:IDLE so stale TRIGGER/STATUS lines
+                # from the just-ended session don't immediately re-fire.
+                logger.info("Draining serial buffer after session end...")
+                _drain_until_idle(link)
+                # Brief cooldown: give the sensor time to confirm the person
+                # is truly gone before we accept another proximity trigger.
+                logger.info("Cooldown 3s before next visitor...")
+                time.sleep(3)
+                logger.info("Ready for next visitor.")
             except (SerialTimeout, SerialLinkError) as e:
                 # A single bad cycle (bad CRC, a stray line, a slow visitor)
                 # - stay on the same connection and just wait for the next

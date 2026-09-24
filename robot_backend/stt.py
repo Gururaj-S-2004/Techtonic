@@ -41,6 +41,28 @@ def pcm16_to_float32(pcm_bytes: bytes) -> np.ndarray:
     return samples.astype(np.float32) / 32768.0
 
 
+# Whisper often mishears uncommon proper nouns.  Add corrections here as
+# new mishearings are discovered during the event.
+# Keys are case-insensitive regex patterns; values are the correct replacements.
+_NAME_CORRECTIONS: list[tuple[str, str]] = [
+    # Robot name  (Nixa / Nexar / Naxer / Naxa / Nexa → Nexa)
+    (r"\bNi[xks]a\b",      "Nexa"),
+    (r"\bNax[ae]r?\b",     "Nexa"),
+    (r"\bNexar\b",         "Nexa"),
+    # Fest name
+    (r"\bTech[- ]?tonic\b", "Techtonic"),
+    (r"\bTek[- ]?tonic\b",  "Techtonic"),
+]
+
+
+def _fix_names(text: str) -> str:
+    """Correct common Whisper mishearings of event-specific proper nouns."""
+    import re
+    for pattern, replacement in _NAME_CORRECTIONS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+
+
 def transcribe(pcm_bytes: bytes) -> str:
     """Returns the best-effort transcript text (empty string if nothing
     intelligible was captured)."""
@@ -56,5 +78,6 @@ def transcribe(pcm_bytes: bytes) -> str:
         beam_size=5,
     )
     text = " ".join(seg.text.strip() for seg in segments).strip()
+    text = _fix_names(text)
     logger.info("STT (%.2fs audio): %r", len(audio) / config.AUDIO_SAMPLE_RATE, text)
     return text
