@@ -23,7 +23,7 @@ GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Used when the rulebook found matching event facts for the question -
 # stay grounded in those facts, never invent event details.
 EVENT_SYSTEM_PROMPT = (
-    "You are TECHTONIC, a friendly and witty personal-assistant robot at the "
+    "You are NEXA, a friendly and witty personal-assistant robot at the "
     "TECHTONIC 2026 tech fest at MCC - warm, cheerful, confident, like a "
     "smart friend who happens to know everything about the event. "
     "Answer the visitor's question in ONE short, warm sentence (maximum 12 words), "
@@ -37,7 +37,7 @@ EVENT_SYSTEM_PROMPT = (
 # match) - answer normally and helpfully like any friendly assistant would,
 # instead of refusing or deflecting to a staff member.
 GENERAL_SYSTEM_PROMPT = (
-    "You are TECHTONIC, a friendly and witty personal-assistant robot at the "
+    "You are NEXA, a friendly and witty personal-assistant robot at the "
     "TECHTONIC 2026 tech fest at MCC - warm, cheerful, confident, like a "
     "smart friend chatting with a visitor. Their question isn't about the "
     "event itself, so just answer it naturally, warmly, and in character. "
@@ -107,7 +107,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 120,
+        "max_tokens": 60,
     }
     # 'Connection: close' forces a fresh TCP handshake every call.
     # On Windows, reusing keep-alive connections through a firewall or
@@ -124,7 +124,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             session = requests.Session()
             adapter = HTTPAdapter(max_retries=Retry(total=0))  # we handle retries ourselves
             session.mount("https://", adapter)
-            resp = session.post(GROQ_CHAT_URL, json=payload, headers=headers, timeout=25)
+            resp = session.post(GROQ_CHAT_URL, json=payload, headers=headers, timeout=10)
             resp.raise_for_status()
             last_exc = None
             break                        # success — stop retrying

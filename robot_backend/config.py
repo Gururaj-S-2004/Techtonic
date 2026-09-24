@@ -50,9 +50,9 @@ RULEBOOK_PATH = _env("RULEBOOK_PATH", str(BASE_DIR / "data" / "rulebook.json"))
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = _env("GROQ_MODEL", "compound-mini")
 
-# -- Audio format shared with KibiKibi.ino ------------------------------
+# -- Audio format shared with Nexa.ino ------------------------------
 AUDIO_SAMPLE_RATE = _env_int("AUDIO_SAMPLE_RATE", 16000)
-AUDIO_SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM, must match KibiKibi.ino
+AUDIO_SAMPLE_WIDTH_BYTES = 2  # 16-bit PCM, must match Nexa.ino
 
 # Brief dramatic pause after COMMAND:SPEAK (answer already shown on the
 # TFT) and before the voice actually starts - makes the robot feel like

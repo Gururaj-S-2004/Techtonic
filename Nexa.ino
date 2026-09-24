@@ -72,7 +72,7 @@
 bool tftReady = false;
 
 // ============================================================================
-// TFT THEME (Techtonic event colors: maroon + gold) & UI LAYOUT
+// TFT THEME (Nexa Bot colors: maroon + gold) & UI LAYOUT
 // ============================================================================
 #define RGB565(r, g, b)                                                        \
   ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
@@ -151,10 +151,43 @@ unsigned long lastPingTime = 0;
 const unsigned long PING_INTERVAL_MS = 100;
 long lastReportedDistance = -999;
 
-// Forward declaration for display helper
+// Persistent servo state driven by proximity (runs in ALL states)
+bool servoOn = false;
+// Set to true inside updateServoFromProximity() when the person walks away
+// during an active session — cleared when we return to idle.
+bool personLeftDuringSession = false;
+
+// Called everywhere we poll so the servo always tracks the sensor.
+void updateServoFromProximity() {
+  if (millis() - lastPingTime < PING_INTERVAL_MS)
+    return;
+  lastPingTime = millis();
+  long dist = readDistanceCM();
+  bool shouldBeOn = (dist > 0 && dist <= TRIGGER_DISTANCE_CM);
+  if (shouldBeOn != servoOn) {
+    servoOn = shouldBeOn;
+    handServo.write(servoOn ? SERVO_WAVE_ANGLE : SERVO_REST_ANGLE);
+    // If person walks away during an active interaction, signal the backend
+    if (!servoOn && currentState != STATE_IDLE) {
+      personLeftDuringSession = true;
+      sendStatus("PERSON_LEFT");
+    }
+  }
+  // Also update the idle distance display when idle
+  if (currentState == STATE_IDLE) {
+    if (abs(dist - lastReportedDistance) >= 2 ||
+        (dist <= TRIGGER_DISTANCE_CM) != (lastReportedDistance <= TRIGGER_DISTANCE_CM)) {
+      lastReportedDistance = dist;
+      showIdleDistance(dist);
+    }
+  }
+}
+
+// Forward declarations
 void showStatus(const char *title, const char *body, uint16_t titleColor = 0);
 void showIdleDistance(long dist);
 void updateAnimation();
+void updateServoFromProximity();
 
 // ============================================================================
 // SETUP
@@ -188,6 +221,10 @@ void setup() {
 // return to idle. Only one visitor is served at a time.
 // ============================================================================
 void loop() {
+  // Servo tracks proximity in ALL states (runs every 100ms regardless of
+  // what the interaction state machine is doing)
+  updateServoFromProximity();
+
   if (currentState == STATE_IDLE) {
     // Drain and ignore any stray laptop command while idle (keeps protocol
     // in sync if the backend restarts mid-session and resends COMMAND:IDLE).
@@ -205,26 +242,10 @@ void loop() {
 
     bool buttonTrigger = digitalRead(PIN_BUTTON) == LOW; // active-low button
 
-    // Ping ultrasonic sensor with a clean 100ms interval (prevents transducer
-    // flooding)
-    bool proximityTrigger = false;
-    if (millis() - lastPingTime >= PING_INTERVAL_MS) {
-      lastPingTime = millis();
-      long dist = readDistanceCM();
-
-      // Only refresh screen if distance changes by >= 2cm to keep display
-      // smooth
-      if (abs(dist - lastReportedDistance) >= 2 ||
-          (dist <= TRIGGER_DISTANCE_CM) !=
-              (lastReportedDistance <= TRIGGER_DISTANCE_CM)) {
-        lastReportedDistance = dist;
-        showIdleDistance(dist);
-      }
-
-      if (dist > 0 && dist <= TRIGGER_DISTANCE_CM) {
-        proximityTrigger = true;
-      }
-    }
+    // Proximity trigger (display update now handled inside
+    // updateServoFromProximity above)
+    bool proximityTrigger =
+        (lastReportedDistance > 0 && lastReportedDistance <= TRIGGER_DISTANCE_CM);
 
     if (buttonTrigger || proximityTrigger) {
       runInteraction(buttonTrigger ? "BUTTON" : "PROXIMITY");
@@ -246,8 +267,8 @@ void runInteraction(const char *triggerSource) {
 
   // --- 1. Wait for COMMAND:GREET from the backend ---
   String cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  if (cmd != "GREET") {
-    sendError("Expected GREET, got: " + cmd);
+  if (cmd == "PERSON_LEFT" || cmd != "GREET") {
+    if (cmd != "PERSON_LEFT") sendError("Expected GREET, got: " + cmd);
     returnToIdle();
     return;
   }
@@ -274,6 +295,13 @@ void runInteraction(const char *triggerSource) {
             : SERIAL_CMD_TIMEOUT_MS;
 
     cmd = waitForCommand(cmdTimeout);
+
+    if (cmd == "PERSON_LEFT") {
+      // Visitor walked away - end session cleanly
+      showStatus("Bye!", "See you\nsoon!");
+      delay(800);
+      break;
+    }
 
     if (cmd == "IDLE") {
       // Laptop detected silence — session is over.
@@ -304,13 +332,16 @@ void runInteraction(const char *triggerSource) {
     // (and then TTS's) worst-case latency, not the usual quick-reply budget
     // - see SERIAL_THINK_TIMEOUT_MS above.
     cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
-    if (cmd == "PROCESSING") {
+    if (cmd == "PROCESSING" || cmd == "PERSON_LEFT") {
+      if (cmd == "PERSON_LEFT") break;
       cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
-    if (cmd.startsWith("DISPLAY_Q:")) {
+    if (cmd.startsWith("DISPLAY_Q:") || cmd == "PERSON_LEFT") {
+      if (cmd == "PERSON_LEFT") break;
       cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
-    if (cmd.startsWith("DISPLAY_A:")) {
+    if (cmd.startsWith("DISPLAY_A:") || cmd == "PERSON_LEFT") {
+      if (cmd == "PERSON_LEFT") break;
       lastAnswer = cmd.substring(10);
       // Switch state before drawing so the badge icon (mic/thinking-dots)
       // doesn't linger stale over the answer text - the answer being shown
@@ -340,7 +371,10 @@ void runInteraction(const char *triggerSource) {
 
 void returnToIdle() {
   currentState = STATE_IDLE;
-  handServo.write(SERVO_REST_ANGLE);
+  personLeftDuringSession = false; // clear for next session
+  // Servo position is now managed entirely by updateServoFromProximity();
+  // do NOT force it here — if someone is still within 60cm when the
+  // interaction ends the servo should stay on.
   showStatus("Ready", "Press button\nor stand\nclose to\nstart");
   lastReportedDistance = -999;
   sendStatus("IDLE");
@@ -383,6 +417,10 @@ String waitForCommand(unsigned long timeoutMs) {
     String line = readLineBlocking(slice);
     updateAnimation(); // step the status icon while we block waiting on the
                        // laptop
+    updateServoFromProximity(); // keep servo tracking sensor during wait
+    // If the person walked away, surface it immediately to the caller
+    if (personLeftDuringSession)
+      return "PERSON_LEFT";
     if (line.length() == 0)
       continue;
     if (line.startsWith("COMMAND:")) {
@@ -508,10 +546,10 @@ void showStatus(const char *title, const char *body, uint16_t titleColor) {
   tft.drawFastHLine(0, HEADER_H, TFT_WIDTH, COL_ACCENT);
   tft.setTextSize(1);
   tft.setTextColor(COL_ACCENT);
-  tft.setCursor(38, 6);
-  tft.print("TECHTONIC 2026");
-  tft.setCursor(39, 6); // 1px overdraw = cheap faux-bold
-  tft.print("TECHTONIC 2026");
+  tft.setCursor(44, 6);
+  tft.print("  NEXA BOT");
+  tft.setCursor(45, 6); // 1px overdraw = cheap faux-bold
+  tft.print("  NEXA BOT");
 
   // Reset animation so the icon redraws immediately at frame 0 for this screen
   animFrame = 0;
@@ -751,7 +789,16 @@ void streamMicToBackend() {
   unsigned long start = millis();
   while (millis() - start < SERIAL_CMD_TIMEOUT_MS) {
     String line = readLineBlocking(200);
-    updateAnimation(); // pulse the mic icon while the laptop records
+    updateAnimation();          // pulse the mic icon while the laptop records
+    updateServoFromProximity(); // keep servo tracking sensor during mic wait
+    // Person walked away mid-recording — abort immediately
+    if (personLeftDuringSession) {
+      // Backend is still recording from the laptop mic; unblock it first by
+      // pretending recording is done, then the PERSON_LEFT status (already
+      // sent by updateServoFromProximity) causes the backend to abort.
+      sendStatus("RECORDING_DONE");
+      return;
+    }
     if (line == "STATUS:RECORDING_DONE")
       return;
     // Ignore stray lines (STATUS echoes, etc.) and keep waiting.

@@ -1,7 +1,7 @@
-"""Serial transport for talking to the ESP32-S3 KibiKibi.
+"""Serial transport for talking to the ESP32-S3 Nexa.
 
 This module is the Python half of the wire protocol documented in the
-WIRE PROTOCOL comment block at the top of ../KibiKibi.ino. The two files
+WIRE PROTOCOL comment block at the top of ../Nexa.ino. The two files
 must always agree exactly - if you change one, change the other and re-run
 tests/test_offline_cycle.py.
 
@@ -26,7 +26,7 @@ from typing import Optional, Protocol
 
 logger = logging.getLogger("robot_backend.serial_link")
 
-# Must match KibiKibi.ino's SERIAL_BAUD.
+# Must match Nexa.ino's SERIAL_BAUD.
 DEFAULT_BAUD = 921600
 
 

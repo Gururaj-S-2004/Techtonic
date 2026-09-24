@@ -23,6 +23,12 @@ from serial_link import SerialLink, SerialLinkError, SerialTimeout
 logger = logging.getLogger("robot_backend.main")
 
 FALLBACK_ANSWER = "Sorry, my circuits are a bit foggy right now. Try again!"
+WELCOME_MESSAGE = "Welcome to Techtonic Fest! I'm Nexa, your event assistant. Ask me anything!"
+GOODBYE_MESSAGE = "Goodbye! Hope to see you again at Techtonic Fest!"
+
+
+class PersonLeft(Exception):
+    """Raised when the visitor walks away (>60cm) mid-session."""
 
 
 def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
@@ -38,11 +44,18 @@ def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
 
 
 def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
-    """Runs one full visitor session (multiple questions) until silence is detected.
-    After each answered question the session loops back to LISTEN.
-    The session ends only when the visitor is silent for MIC_RECORD_SECONDS seconds."""
+    """Runs one full visitor session (multiple questions) until silence is
+    detected OR the visitor walks away (>60cm).
+    Raises PersonLeft if the visitor leaves mid-session so the caller can
+    play a goodbye and then welcome the next person."""
     trigger_source = link.wait_for_trigger()
     logger.info("Trigger received: %s", trigger_source)
+
+    # Speak the welcome greeting before anything else
+    logger.info("Speaking welcome greeting")
+    welcome_pcm, welcome_sr = tts.synthesize(WELCOME_MESSAGE)
+    if welcome_pcm:
+        _play_audio(welcome_pcm, welcome_sr)
 
     link.send_command("GREET")
     link.wait_for_status("GREETING_DONE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
@@ -57,6 +70,9 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
         link.send_line("STATUS:RECORDING_DONE")
         logger.info("Recorded %.2fs of audio from laptop mic",
                     len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
+
+        # Check if person left while we were recording
+        _raise_if_person_left(link)
 
         question = stt.transcribe(pcm_audio)
 
@@ -109,9 +125,28 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
         # Play the TTS audio on the laptop's own speaker, start to finish.
         _play_audio(pcm_bytes, sample_rate)
 
+        # After speaking, check if the person left while we were talking
+        _raise_if_person_left(link)
+
         # After speaking: the while loop sends COMMAND:LISTEN next round —
         # NO COMMAND:IDLE here, so the ESP32 stays in the session.
 
+
+def _raise_if_person_left(link: SerialLink) -> None:
+    """Peeks at buffered serial lines (non-blocking) and raises PersonLeft if
+    STATUS:PERSON_LEFT is in the incoming stream. Safe to call at any await
+    point between serial commands."""
+    try:
+        # Drain up to 5 buffered lines without blocking
+        for _ in range(5):
+            line = link.readline(timeout=0.05)
+            if line == "STATUS:PERSON_LEFT":
+                logger.info("Person left mid-session — aborting")
+                raise PersonLeft()
+            if line.startswith("STATUS:"):
+                logger.info("[ESP32] %s", line[len("STATUS:"):])
+    except SerialTimeout:
+        pass  # no buffered data — that's fine
 
 
 def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
@@ -170,6 +205,22 @@ def main() -> None:
         while True:
             try:
                 run_interaction(link, rulebook)
+            except PersonLeft:
+                # Person walked away — say goodbye, then wait for next person
+                logger.info("Session ended: visitor left. Speaking goodbye.")
+                # Tell ESP32 to reset to idle
+                try:
+                    link.send_command("IDLE")
+                except Exception:
+                    pass
+                # Speak goodbye
+                try:
+                    bye_pcm, bye_sr = tts.synthesize(GOODBYE_MESSAGE)
+                    if bye_pcm:
+                        _play_audio(bye_pcm, bye_sr)
+                except Exception as e:
+                    logger.warning("Goodbye TTS failed: %s", e)
+                logger.info("Goodbye spoken. Ready for next visitor.")
             except (SerialTimeout, SerialLinkError) as e:
                 # A single bad cycle (bad CRC, a stray line, a slow visitor)
                 # - stay on the same connection and just wait for the next
