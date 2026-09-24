@@ -39,6 +39,16 @@ SERIAL_COMMAND_TIMEOUT_S = _env_float("SERIAL_COMMAND_TIMEOUT_S", 20.0)
 WHISPER_MODEL_SIZE = _env("WHISPER_MODEL_SIZE", "small.en")
 WHISPER_DEVICE = _env("WHISPER_DEVICE", "cpu")
 WHISPER_COMPUTE_TYPE = _env("WHISPER_COMPUTE_TYPE", "int8")
+# Beam search width for decoding. beam_size=5 (faster-whisper's own default)
+# explores 5x more hypotheses per step than beam_size=1 (greedy) for a small
+# accuracy gain that barely matters on short, clearly-spoken event questions
+# - on CPU it's one of the biggest levers on transcription latency.
+WHISPER_BEAM_SIZE = _env_int("WHISPER_BEAM_SIZE", 1)
+# CTranslate2 defaults to just 4 CPU threads when this is 0, regardless of
+# how many cores the machine has. 0 here means "use all logical cores"
+# instead of that fixed default.
+_whisper_cpu_threads_raw = _env_int("WHISPER_CPU_THREADS", 0)
+WHISPER_CPU_THREADS = _whisper_cpu_threads_raw if _whisper_cpu_threads_raw > 0 else (os.cpu_count() or 4)
 
 # -- Text-to-speech (Piper, offline) -------------------------------------
 PIPER_MODEL_PATH = _env("PIPER_MODEL_PATH", str(BASE_DIR / "voices" / "en_US-lessac-medium.onnx"))

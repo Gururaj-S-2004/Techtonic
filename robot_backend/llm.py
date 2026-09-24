@@ -117,6 +117,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
         "Connection": "close",
     }
 
+    t0 = time.perf_counter()
     last_exc: Exception | None = None
     for attempt in range(1, 4):          # up to 3 attempts
         try:
@@ -137,6 +138,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             session.close()
     if last_exc is not None:
         raise LLMError(f"Groq request failed after 3 attempts: {last_exc}") from last_exc
+    logger.info("Groq call (%s) took %.2fs (%d attempt(s))", config.GROQ_MODEL, time.perf_counter() - t0, attempt)
 
     data = resp.json()
     try:

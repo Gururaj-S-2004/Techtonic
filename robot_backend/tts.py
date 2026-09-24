@@ -8,6 +8,7 @@ so no resampling is needed, giving better audio quality than the old
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 
@@ -36,6 +37,7 @@ def synthesize(text: str) -> tuple[bytes, int]:
         return b"", config.AUDIO_SAMPLE_RATE
 
     voice = _get_voice()
+    t0 = time.perf_counter()
     # voice.synthesize() yields one AudioChunk per sentence (mono int16 PCM
     # at the voice's native sample rate) - concatenate them all.
     chunks = list(voice.synthesize(text))
@@ -48,9 +50,10 @@ def synthesize(text: str) -> tuple[bytes, int]:
     )
     pcm_bytes = samples.astype("<i2").tobytes()
     logger.info(
-        "TTS %r -> %.2fs audio at %dHz",
+        "TTS %r -> %.2fs audio at %dHz, synthesis took %.2fs",
         text,
         len(samples) / sample_rate,
         sample_rate,
+        time.perf_counter() - t0,
     )
     return pcm_bytes, sample_rate

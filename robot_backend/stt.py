@@ -7,6 +7,7 @@ transcribe() - no audio is streamed from the ESP32.
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 
@@ -23,15 +24,17 @@ def _get_model():
         from faster_whisper import WhisperModel
 
         logger.info(
-            "Loading faster-whisper model=%s device=%s compute_type=%s (first call, may take a while)",
+            "Loading faster-whisper model=%s device=%s compute_type=%s cpu_threads=%d (first call, may take a while)",
             config.WHISPER_MODEL_SIZE,
             config.WHISPER_DEVICE,
             config.WHISPER_COMPUTE_TYPE,
+            config.WHISPER_CPU_THREADS,
         )
         _model = WhisperModel(
             config.WHISPER_MODEL_SIZE,
             device=config.WHISPER_DEVICE,
             compute_type=config.WHISPER_COMPUTE_TYPE,
+            cpu_threads=config.WHISPER_CPU_THREADS,
         )
     return _model
 
@@ -49,12 +52,18 @@ def transcribe(pcm_bytes: bytes) -> str:
 
     audio = pcm16_to_float32(pcm_bytes)
     model = _get_model()
+    t0 = time.perf_counter()
     segments, info = model.transcribe(
         audio,
         language="en",
         vad_filter=True,
-        beam_size=5,
+        beam_size=config.WHISPER_BEAM_SIZE,
     )
     text = " ".join(seg.text.strip() for seg in segments).strip()
-    logger.info("STT (%.2fs audio): %r", len(audio) / config.AUDIO_SAMPLE_RATE, text)
+    logger.info(
+        "STT (%.2fs audio) took %.2fs: %r",
+        len(audio) / config.AUDIO_SAMPLE_RATE,
+        time.perf_counter() - t0,
+        text,
+    )
     return text
