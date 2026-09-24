@@ -23,12 +23,6 @@ from serial_link import SerialLink, SerialLinkError, SerialTimeout
 logger = logging.getLogger("robot_backend.main")
 
 FALLBACK_ANSWER = "Sorry, my circuits are a bit foggy right now. Try again!"
-WELCOME_MESSAGE = "Welcome to Techtonic Fest! I'm Nexa, your event assistant. Ask me anything!"
-GOODBYE_MESSAGE = "Goodbye! Hope to see you again at Techtonic Fest!"
-
-
-class PersonLeft(Exception):
-    """Raised when the visitor walks away (>60cm) mid-session."""
 
 
 def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
@@ -44,18 +38,11 @@ def format_for_display(text: str, width: int = 12, max_lines: int = 5) -> str:
 
 
 def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
-    """Runs one full visitor session (multiple questions) until silence is
-    detected OR the visitor walks away (>60cm).
-    Raises PersonLeft if the visitor leaves mid-session so the caller can
-    play a goodbye and then welcome the next person."""
+    """Runs one full visitor session (multiple questions) until silence is detected.
+    After each answered question the session loops back to LISTEN.
+    The session ends only when the visitor is silent for MIC_RECORD_SECONDS seconds."""
     trigger_source = link.wait_for_trigger()
     logger.info("Trigger received: %s", trigger_source)
-
-    # Speak the welcome greeting before anything else
-    logger.info("Speaking welcome greeting")
-    welcome_pcm, welcome_sr = tts.synthesize(WELCOME_MESSAGE)
-    if welcome_pcm:
-        _play_audio(welcome_pcm, welcome_sr)
 
     link.send_command("GREET")
     link.wait_for_status("GREETING_DONE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
@@ -66,12 +53,11 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
     while True:
         link.send_command("LISTEN")
         link.wait_for_status("LISTEN_READY", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
-        pcm_audio = mic.record()                   # records for MIC_RECORD_SECONDS
+        pcm_audio = mic.record()                   # records for MIC_RECORD_SECONDS (6s)
         link.send_line("STATUS:RECORDING_DONE")
         logger.info("Recorded %.2fs of audio from laptop mic",
                     len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
 
-        processing_start = time.perf_counter()
         question = stt.transcribe(pcm_audio)
 
         if not question:
@@ -112,10 +98,6 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
             link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
             return
 
-        logger.info(
-            "Question -> answer ready in %.2fs (STT+rulebook+LLM+TTS)",
-            time.perf_counter() - processing_start,
-        )
         link.send_command("SPEAK")
 
         # Small deliberate pause before the voice starts - reads as the robot
@@ -127,48 +109,9 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
         # Play the TTS audio on the laptop's own speaker, start to finish.
         _play_audio(pcm_bytes, sample_rate)
 
-        # After speaking, check if the person left while we were talking
-        _raise_if_person_left(link)
-
         # After speaking: the while loop sends COMMAND:LISTEN next round —
         # NO COMMAND:IDLE here, so the ESP32 stays in the session.
 
-
-def _raise_if_person_left(link: SerialLink) -> None:
-    """Peeks at buffered serial lines (non-blocking) and raises PersonLeft if
-    STATUS:PERSON_LEFT is in the incoming stream. Safe to call at any await
-    point between serial commands."""
-    person_left = False
-    for _ in range(5):
-        try:
-            line = link.readline(timeout=0.05)
-        except SerialTimeout:
-            break  # no more buffered data
-        if line == "STATUS:PERSON_LEFT":
-            logger.info("Person left mid-session — aborting")
-            person_left = True
-        elif line.startswith("STATUS:"):
-            logger.info("[ESP32] %s", line[len("STATUS:"):])
-    if person_left:
-        raise PersonLeft()
-
-
-def _drain_until_idle(link: SerialLink, timeout: float = 5.0) -> None:
-    """Reads and discards all serial lines until STATUS:IDLE arrives or timeout.
-    Also consumes any stale STATUS:PERSON_LEFT lines so they cannot poison the
-    next session's _raise_if_person_left check."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            line = link.readline(timeout=0.3)
-            logger.debug("drain: %r", line)
-            if line == "STATUS:IDLE":
-                return
-            # Explicitly consume PERSON_LEFT so it never leaks into the next session
-            if line == "STATUS:PERSON_LEFT":
-                logger.debug("drain: consumed stale PERSON_LEFT")
-        except SerialTimeout:
-            continue
 
 
 def _play_audio(pcm_bytes: bytes, sample_rate: int) -> None:
@@ -227,32 +170,6 @@ def main() -> None:
         while True:
             try:
                 run_interaction(link, rulebook)
-            except PersonLeft:
-                # Person walked away — say goodbye, sync ESP32 to idle,
-                # then wait a beat before accepting the next visitor so we
-                # don't immediately re-trigger on the same person.
-                logger.info("Session ended: visitor left. Speaking goodbye.")
-                # Tell ESP32 to reset to idle
-                try:
-                    link.send_command("IDLE")
-                except Exception:
-                    pass
-                # Speak goodbye
-                try:
-                    bye_pcm, bye_sr = tts.synthesize(GOODBYE_MESSAGE)
-                    if bye_pcm:
-                        _play_audio(bye_pcm, bye_sr)
-                except Exception as e:
-                    logger.warning("Goodbye TTS failed: %s", e)
-                # Drain serial until STATUS:IDLE so stale TRIGGER/STATUS lines
-                # from the just-ended session don't immediately re-fire.
-                logger.info("Draining serial buffer after session end...")
-                _drain_until_idle(link)
-                # Brief cooldown: give the sensor time to confirm the person
-                # is truly gone before we accept another proximity trigger.
-                logger.info("Cooldown 3s before next visitor...")
-                time.sleep(3)
-                logger.info("Ready for next visitor.")
             except (SerialTimeout, SerialLinkError) as e:
                 # A single bad cycle (bad CRC, a stray line, a slow visitor)
                 # - stay on the same connection and just wait for the next

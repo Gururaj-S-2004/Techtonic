@@ -23,7 +23,7 @@ GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions"
 # Used when the rulebook found matching event facts for the question -
 # stay grounded in those facts, never invent event details.
 EVENT_SYSTEM_PROMPT = (
-    "You are NEXA, a friendly and witty personal-assistant robot at the "
+    "You are TECHTONIC, a friendly and witty personal-assistant robot at the "
     "TECHTONIC 2026 tech fest at MCC - warm, cheerful, confident, like a "
     "smart friend who happens to know everything about the event. "
     "Answer the visitor's question in ONE short, warm sentence (maximum 12 words), "
@@ -37,7 +37,7 @@ EVENT_SYSTEM_PROMPT = (
 # match) - answer normally and helpfully like any friendly assistant would,
 # instead of refusing or deflecting to a staff member.
 GENERAL_SYSTEM_PROMPT = (
-    "You are NEXA, a friendly and witty personal-assistant robot at the "
+    "You are TECHTONIC, a friendly and witty personal-assistant robot at the "
     "TECHTONIC 2026 tech fest at MCC - warm, cheerful, confident, like a "
     "smart friend chatting with a visitor. Their question isn't about the "
     "event itself, so just answer it naturally, warmly, and in character. "
@@ -117,7 +117,6 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
         "Connection": "close",
     }
 
-    t0 = time.perf_counter()
     last_exc: Exception | None = None
     for attempt in range(1, 4):          # up to 3 attempts
         try:
@@ -138,7 +137,6 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             session.close()
     if last_exc is not None:
         raise LLMError(f"Groq request failed after 3 attempts: {last_exc}") from last_exc
-    logger.info("Groq call (%s) took %.2fs (%d attempt(s))", config.GROQ_MODEL, time.perf_counter() - t0, attempt)
 
     data = resp.json()
     try:

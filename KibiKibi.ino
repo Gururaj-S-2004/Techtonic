@@ -72,7 +72,7 @@
 bool tftReady = false;
 
 // ============================================================================
-// TFT THEME (Nexa Bot colors: maroon + gold) & UI LAYOUT
+// TFT THEME (Techtonic event colors: maroon + gold) & UI LAYOUT
 // ============================================================================
 #define RGB565(r, g, b)                                                        \
   ((uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3)))
@@ -153,9 +153,6 @@ long lastReportedDistance = -999;
 
 // Persistent servo state driven by proximity (runs in ALL states)
 bool servoOn = false;
-// Set to true inside updateServoFromProximity() when the person walks away
-// during an active session — cleared when we return to idle.
-bool personLeftDuringSession = false;
 
 // Called everywhere we poll so the servo always tracks the sensor.
 void updateServoFromProximity() {
@@ -167,11 +164,6 @@ void updateServoFromProximity() {
   if (shouldBeOn != servoOn) {
     servoOn = shouldBeOn;
     handServo.write(servoOn ? SERVO_WAVE_ANGLE : SERVO_REST_ANGLE);
-    // If person walks away during an active interaction, signal the backend
-    if (!servoOn && currentState != STATE_IDLE) {
-      personLeftDuringSession = true;
-      sendStatus("PERSON_LEFT");
-    }
   }
   // Also update the idle distance display when idle
   if (currentState == STATE_IDLE) {
@@ -267,8 +259,8 @@ void runInteraction(const char *triggerSource) {
 
   // --- 1. Wait for COMMAND:GREET from the backend ---
   String cmd = waitForCommand(SERIAL_CMD_TIMEOUT_MS);
-  if (cmd == "PERSON_LEFT" || cmd != "GREET") {
-    if (cmd != "PERSON_LEFT") sendError("Expected GREET, got: " + cmd);
+  if (cmd != "GREET") {
+    sendError("Expected GREET, got: " + cmd);
     returnToIdle();
     return;
   }
@@ -295,13 +287,6 @@ void runInteraction(const char *triggerSource) {
             : SERIAL_CMD_TIMEOUT_MS;
 
     cmd = waitForCommand(cmdTimeout);
-
-    if (cmd == "PERSON_LEFT") {
-      // Visitor walked away - end session cleanly
-      showStatus("Bye!", "See you\nsoon!");
-      delay(800);
-      break;
-    }
 
     if (cmd == "IDLE") {
       // Laptop detected silence — session is over.
@@ -332,16 +317,13 @@ void runInteraction(const char *triggerSource) {
     // (and then TTS's) worst-case latency, not the usual quick-reply budget
     // - see SERIAL_THINK_TIMEOUT_MS above.
     cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
-    if (cmd == "PROCESSING" || cmd == "PERSON_LEFT") {
-      if (cmd == "PERSON_LEFT") break;
+    if (cmd == "PROCESSING") {
       cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
-    if (cmd.startsWith("DISPLAY_Q:") || cmd == "PERSON_LEFT") {
-      if (cmd == "PERSON_LEFT") break;
+    if (cmd.startsWith("DISPLAY_Q:")) {
       cmd = waitForCommand(SERIAL_THINK_TIMEOUT_MS);
     }
-    if (cmd.startsWith("DISPLAY_A:") || cmd == "PERSON_LEFT") {
-      if (cmd == "PERSON_LEFT") break;
+    if (cmd.startsWith("DISPLAY_A:")) {
       lastAnswer = cmd.substring(10);
       // Switch state before drawing so the badge icon (mic/thinking-dots)
       // doesn't linger stale over the answer text - the answer being shown
@@ -371,7 +353,6 @@ void runInteraction(const char *triggerSource) {
 
 void returnToIdle() {
   currentState = STATE_IDLE;
-  personLeftDuringSession = false; // clear for next session
   // Servo position is now managed entirely by updateServoFromProximity();
   // do NOT force it here — if someone is still within 60cm when the
   // interaction ends the servo should stay on.
@@ -418,9 +399,6 @@ String waitForCommand(unsigned long timeoutMs) {
     updateAnimation(); // step the status icon while we block waiting on the
                        // laptop
     updateServoFromProximity(); // keep servo tracking sensor during wait
-    // If the person walked away, surface it immediately to the caller
-    if (personLeftDuringSession)
-      return "PERSON_LEFT";
     if (line.length() == 0)
       continue;
     if (line.startsWith("COMMAND:")) {
@@ -546,10 +524,10 @@ void showStatus(const char *title, const char *body, uint16_t titleColor) {
   tft.drawFastHLine(0, HEADER_H, TFT_WIDTH, COL_ACCENT);
   tft.setTextSize(1);
   tft.setTextColor(COL_ACCENT);
-  tft.setCursor(44, 6);
-  tft.print("  NEXA BOT");
-  tft.setCursor(45, 6); // 1px overdraw = cheap faux-bold
-  tft.print("  NEXA BOT");
+  tft.setCursor(38, 6);
+  tft.print("TECHTONIC 2026");
+  tft.setCursor(39, 6); // 1px overdraw = cheap faux-bold
+  tft.print("TECHTONIC 2026");
 
   // Reset animation so the icon redraws immediately at frame 0 for this screen
   animFrame = 0;
@@ -791,14 +769,6 @@ void streamMicToBackend() {
     String line = readLineBlocking(200);
     updateAnimation();          // pulse the mic icon while the laptop records
     updateServoFromProximity(); // keep servo tracking sensor during mic wait
-    // Person walked away mid-recording — abort immediately
-    if (personLeftDuringSession) {
-      // Backend is still recording from the laptop mic; unblock it first by
-      // pretending recording is done, then the PERSON_LEFT status (already
-      // sent by updateServoFromProximity) causes the backend to abort.
-      sendStatus("RECORDING_DONE");
-      return;
-    }
     if (line == "STATUS:RECORDING_DONE")
       return;
     // Ignore stray lines (STATUS echoes, etc.) and keep waiting.
