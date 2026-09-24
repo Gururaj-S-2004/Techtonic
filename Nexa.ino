@@ -157,6 +157,12 @@ bool servoOn = false;
 // during an active session — cleared when we return to idle.
 bool personLeftDuringSession = false;
 
+// Forward declarations
+void showStatus(const char *title, const char *body, uint16_t titleColor = 0);
+void showIdleDistance(long dist);
+void updateAnimation();
+void updateServoFromProximity();
+
 // Called everywhere we poll so the servo always tracks the sensor.
 void updateServoFromProximity() {
   if (millis() - lastPingTime < PING_INTERVAL_MS)
@@ -183,11 +189,6 @@ void updateServoFromProximity() {
   }
 }
 
-// Forward declarations
-void showStatus(const char *title, const char *body, uint16_t titleColor = 0);
-void showIdleDistance(long dist);
-void updateAnimation();
-void updateServoFromProximity();
 
 // ============================================================================
 // SETUP
