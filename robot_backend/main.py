@@ -66,11 +66,12 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
     while True:
         link.send_command("LISTEN")
         link.wait_for_status("LISTEN_READY", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
-        pcm_audio = mic.record()                   # records for MIC_RECORD_SECONDS (6s)
+        pcm_audio = mic.record()                   # records for MIC_RECORD_SECONDS
         link.send_line("STATUS:RECORDING_DONE")
         logger.info("Recorded %.2fs of audio from laptop mic",
                     len(pcm_audio) / 2 / config.AUDIO_SAMPLE_RATE)
 
+        processing_start = time.perf_counter()
         question = stt.transcribe(pcm_audio)
 
         if not question:
@@ -111,6 +112,10 @@ def run_interaction(link: SerialLink, rulebook: rulebook_mod.Rulebook) -> None:
             link.wait_for_status("IDLE", timeout=config.SERIAL_COMMAND_TIMEOUT_S)
             return
 
+        logger.info(
+            "Question -> answer ready in %.2fs (STT+rulebook+LLM+TTS)",
+            time.perf_counter() - processing_start,
+        )
         link.send_command("SPEAK")
 
         # Small deliberate pause before the voice starts - reads as the robot
