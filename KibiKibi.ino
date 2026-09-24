@@ -151,35 +151,10 @@ unsigned long lastPingTime = 0;
 const unsigned long PING_INTERVAL_MS = 100;
 long lastReportedDistance = -999;
 
-// Persistent servo state driven by proximity (runs in ALL states)
-bool servoOn = false;
-
-// Called everywhere we poll so the servo always tracks the sensor.
-void updateServoFromProximity() {
-  if (millis() - lastPingTime < PING_INTERVAL_MS)
-    return;
-  lastPingTime = millis();
-  long dist = readDistanceCM();
-  bool shouldBeOn = (dist > 0 && dist <= TRIGGER_DISTANCE_CM);
-  if (shouldBeOn != servoOn) {
-    servoOn = shouldBeOn;
-    handServo.write(servoOn ? SERVO_WAVE_ANGLE : SERVO_REST_ANGLE);
-  }
-  // Also update the idle distance display when idle
-  if (currentState == STATE_IDLE) {
-    if (abs(dist - lastReportedDistance) >= 2 ||
-        (dist <= TRIGGER_DISTANCE_CM) != (lastReportedDistance <= TRIGGER_DISTANCE_CM)) {
-      lastReportedDistance = dist;
-      showIdleDistance(dist);
-    }
-  }
-}
-
-// Forward declarations
+// Forward declaration for display helper
 void showStatus(const char *title, const char *body, uint16_t titleColor = 0);
 void showIdleDistance(long dist);
 void updateAnimation();
-void updateServoFromProximity();
 
 // ============================================================================
 // SETUP
@@ -213,10 +188,6 @@ void setup() {
 // return to idle. Only one visitor is served at a time.
 // ============================================================================
 void loop() {
-  // Servo tracks proximity in ALL states (runs every 100ms regardless of
-  // what the interaction state machine is doing)
-  updateServoFromProximity();
-
   if (currentState == STATE_IDLE) {
     // Drain and ignore any stray laptop command while idle (keeps protocol
     // in sync if the backend restarts mid-session and resends COMMAND:IDLE).
@@ -234,10 +205,26 @@ void loop() {
 
     bool buttonTrigger = digitalRead(PIN_BUTTON) == LOW; // active-low button
 
-    // Proximity trigger (display update now handled inside
-    // updateServoFromProximity above)
-    bool proximityTrigger =
-        (lastReportedDistance > 0 && lastReportedDistance <= TRIGGER_DISTANCE_CM);
+    // Ping ultrasonic sensor with a clean 100ms interval (prevents transducer
+    // flooding)
+    bool proximityTrigger = false;
+    if (millis() - lastPingTime >= PING_INTERVAL_MS) {
+      lastPingTime = millis();
+      long dist = readDistanceCM();
+
+      // Only refresh screen if distance changes by >= 2cm to keep display
+      // smooth
+      if (abs(dist - lastReportedDistance) >= 2 ||
+          (dist <= TRIGGER_DISTANCE_CM) !=
+              (lastReportedDistance <= TRIGGER_DISTANCE_CM)) {
+        lastReportedDistance = dist;
+        showIdleDistance(dist);
+      }
+
+      if (dist > 0 && dist <= TRIGGER_DISTANCE_CM) {
+        proximityTrigger = true;
+      }
+    }
 
     if (buttonTrigger || proximityTrigger) {
       runInteraction(buttonTrigger ? "BUTTON" : "PROXIMITY");
@@ -353,9 +340,7 @@ void runInteraction(const char *triggerSource) {
 
 void returnToIdle() {
   currentState = STATE_IDLE;
-  // Servo position is now managed entirely by updateServoFromProximity();
-  // do NOT force it here — if someone is still within 60cm when the
-  // interaction ends the servo should stay on.
+  handServo.write(SERVO_REST_ANGLE);
   showStatus("Ready", "Press button\nor stand\nclose to\nstart");
   lastReportedDistance = -999;
   sendStatus("IDLE");
@@ -398,7 +383,6 @@ String waitForCommand(unsigned long timeoutMs) {
     String line = readLineBlocking(slice);
     updateAnimation(); // step the status icon while we block waiting on the
                        // laptop
-    updateServoFromProximity(); // keep servo tracking sensor during wait
     if (line.length() == 0)
       continue;
     if (line.startsWith("COMMAND:")) {
@@ -767,8 +751,7 @@ void streamMicToBackend() {
   unsigned long start = millis();
   while (millis() - start < SERIAL_CMD_TIMEOUT_MS) {
     String line = readLineBlocking(200);
-    updateAnimation();          // pulse the mic icon while the laptop records
-    updateServoFromProximity(); // keep servo tracking sensor during mic wait
+    updateAnimation(); // pulse the mic icon while the laptop records
     if (line == "STATUS:RECORDING_DONE")
       return;
     // Ignore stray lines (STATUS echoes, etc.) and keep waiting.

@@ -107,7 +107,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.4,
-        "max_tokens": 60,
+        "max_tokens": 120,
     }
     # 'Connection: close' forces a fresh TCP handshake every call.
     # On Windows, reusing keep-alive connections through a firewall or
@@ -124,7 +124,7 @@ def answer_question(question: str, matches: list[RuleMatch]) -> str:
             session = requests.Session()
             adapter = HTTPAdapter(max_retries=Retry(total=0))  # we handle retries ourselves
             session.mount("https://", adapter)
-            resp = session.post(GROQ_CHAT_URL, json=payload, headers=headers, timeout=10)
+            resp = session.post(GROQ_CHAT_URL, json=payload, headers=headers, timeout=25)
             resp.raise_for_status()
             last_exc = None
             break                        # success — stop retrying
